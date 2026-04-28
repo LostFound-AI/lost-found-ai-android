@@ -67,6 +67,10 @@ class MapViewModel(
         repository.renameSavedBoundary(id, newName)
     }
 
+    fun clearRoom() {
+        repository.clearRoom()
+    }
+
     /**
      * After the boundary changes, relocate any objects that are now outside
      * the new boundary to the nearest valid position inside it.

@@ -13,9 +13,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.Offset
@@ -24,6 +31,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -46,7 +55,8 @@ import com.example.lostfoundai.utils.BoundaryUtils
 @Composable
 fun MapScreen(
     mapViewModel: MapViewModel,
-    searchViewModel: SearchViewModel
+    searchViewModel: SearchViewModel,
+    onNavigateHome: () -> Unit = {}
 ) {
     val mapObjects by mapViewModel.mapObjects.collectAsState(initial = emptyList())
     val predictedSpots by mapViewModel.predictedSpots.collectAsState()
@@ -63,9 +73,53 @@ fun MapScreen(
     // Naming dialog for custom boundaries
     var showNameDialog by remember { mutableStateOf(false) }
     var pendingBoundaryVertices by remember { mutableStateOf<List<PointF>>(emptyList()) }
+    
+    // Manual specify location
+    var isSpecifyingLocation by remember { mutableStateOf(false) }
+    var specifiedLocation by remember { mutableStateOf<PointF?>(null) }
+    var editingItem by remember { mutableStateOf<com.example.lostfoundai.data.MissingItem?>(null) }
+    
+    // Form States hoisted
+    var itemName by remember { mutableStateOf("") }
+    var categoryExpanded by remember { mutableStateOf(false) }
+    val categories = listOf("飾品", "隨身物品", "電子產品", "紙本", "衛浴用品", "家電配件", "衣物", "自訂")
+    var selectedCategory by remember { mutableStateOf(categories[0]) }
+    var customCategory by remember { mutableStateOf("") }
+
+    var sizeExpanded by remember { mutableStateOf(false) }
+    val sizes = when (selectedCategory) {
+        "飾品" -> listOf("極小 (< 2cm)", "小 (2-5cm)", "中 (5-10cm)", "自訂")
+        "隨身物品" -> listOf("小 (5-15cm)", "中 (15-30cm)", "大 (> 30cm)", "自訂")
+        "電子產品" -> listOf("小 (手機/滑鼠)", "中 (平板/鍵盤)", "大 (筆電/螢幕)", "自訂")
+        "紙本" -> listOf("小 (名片/票據)", "中 (A5/筆記本)", "大 (A4/文件夾)", "自訂")
+        "衛浴用品" -> listOf("小 (牙刷/刮鬍刀)", "中 (瓶罐/毛巾)", "大 (浴巾/臉盆)", "自訂")
+        "家電配件" -> listOf("小 (遙控器/線材)", "中 (吹風機/快煮壺)", "大 (風扇/吸塵器)", "自訂")
+        "衣物" -> listOf("小 (襪子/內衣)", "中 (上衣/褲子)", "大 (外套/大衣)", "自訂")
+        else -> listOf("極小", "小", "中", "大", "自訂")
+    }
+    var selectedSize by remember { mutableStateOf(sizes[0]) }
+    
+    LaunchedEffect(selectedCategory) {
+        if (selectedSize !in sizes) {
+            selectedSize = sizes[0]
+        }
+    }
+    var customSize by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    BackHandler(enabled = showSearchSheet) {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        showSearchSheet = false
+    }
+
     // Rename dialog state
     var renamingBoundary by remember { mutableStateOf<SavedBoundary?>(null) }
     var renameText by remember { mutableStateOf("") }
+    
+    var showClearRoomDialog by remember { mutableStateOf(false) }
+    
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val density = LocalDensity.current.density
 
@@ -111,9 +165,43 @@ fun MapScreen(
                         onCheckedChange = { mapViewModel.setGridEnabled(it) }
                     )
                 }
+                HorizontalDivider()
+                TextButton(
+                    onClick = { showClearRoomDialog = true },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("清除房間", color = MaterialTheme.colorScheme.error)
+                }
+                TextButton(
+                    onClick = onNavigateHome,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("返回主頁")
+                }
             }
         }
     ) {
+        if (showClearRoomDialog) {
+            AlertDialog(
+                onDismissRequest = { showClearRoomDialog = false },
+                title = { Text("確認清除房間") },
+                text = { Text("您確定要清除所有房間物件並重設邊界嗎？此操作無法復原。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        mapViewModel.clearRoom()
+                        showClearRoomDialog = false
+                    }) {
+                        Text("確認刪除", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearRoomDialog = false }) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
+
         Scaffold { padding ->
             Box(
                 modifier = Modifier
@@ -141,8 +229,18 @@ fun MapScreen(
                         boundaryVertices = roomBoundary.vertices,
                         isDrawingBoundary = isDrawingBoundary,
                         drawingVertices = drawingVertices,
-                        onDrawingTap = { tapOffsetDp ->
-                            drawingVertices = drawingVertices + tapOffsetDp
+                        isSpecifyingLocation = isSpecifyingLocation,
+                        specifiedLocation = specifiedLocation,
+                        onCanvasTap = { tapOffsetDp ->
+                            if (isDrawingBoundary) {
+                                drawingVertices = drawingVertices + tapOffsetDp
+                            } else if (isSpecifyingLocation) {
+                                specifiedLocation = tapOffsetDp
+                                isSpecifyingLocation = false
+                                showSearchSheet = true
+                                // Ensure we are in form view
+                                // showHistory is already false when we enter this state, but we ensure it
+                            }
                         },
                         onObjectMove = { id, dx, dy ->
                             val obj = mapObjects.find { it.id == id }
@@ -354,13 +452,29 @@ fun MapScreen(
 
                 if (!isDrawingBoundary && !isEditing) {
                     // Bottom center search
-                    Button(
-                        onClick = { showSearchSheet = true },
+                    Row(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 24.dp)
+                            .padding(bottom = 24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("尋找")
+                        Button(onClick = { showSearchSheet = true }) {
+                            Text("尋找")
+                        }
+                        if (predictedSpots.isNotEmpty() || specifiedLocation != null) {
+                            IconButton(
+                                onClick = { 
+                                    mapViewModel.clearPredictedSpots()
+                                    specifiedLocation = null
+                                },
+                                modifier = Modifier
+                                    .background(Color.Gray.copy(alpha = 0.8f), shape = androidx.compose.foundation.shape.CircleShape)
+                                    .size(40.dp)
+                            ) {
+                                Text("X", color = Color.Black, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
                     }
 
                     // Top right edit icon
@@ -420,22 +534,69 @@ fun MapScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
-                                    .clickable {
-                                        mapViewModel.startAIPrediction(item.id)
-                                        showSearchSheet = false
-                                    }
                             ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text(
-                                        text = item.name,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "類別: ${item.category.name} | 大小: ${item.size.name}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).clickable {
+                                        if (item.manualX != null && item.manualY != null) {
+                                            mapViewModel.clearPredictedSpots()
+                                            specifiedLocation = PointF(item.manualX, item.manualY)
+                                        } else {
+                                            mapViewModel.startAIPrediction(item.id)
+                                            specifiedLocation = null
+                                        }
+                                        showSearchSheet = false
+                                    }) {
+                                        Text(
+                                            text = item.name + if (item.manualX != null && item.manualY != null) " (已指定)" else "",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "類別: ${item.category.name} | 大小: ${getSizeDisplay(item.category, item.size)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Row {
+                                        IconButton(onClick = {
+                                            // Edit Item
+                                            editingItem = item
+                                            itemName = item.name
+                                            // Simple mapping, fallback to custom
+                                            val mappedCategory = when(item.category) {
+                                                com.example.lostfoundai.data.ItemCategory.ACCESSORY -> "飾品"
+                                                com.example.lostfoundai.data.ItemCategory.BELONGINGS -> "隨身物品"
+                                                com.example.lostfoundai.data.ItemCategory.ELECTRONICS -> "電子產品"
+                                                com.example.lostfoundai.data.ItemCategory.PAPER -> "紙本"
+                                                com.example.lostfoundai.data.ItemCategory.BATHROOM -> "衛浴用品"
+                                                com.example.lostfoundai.data.ItemCategory.APPLIANCE -> "家電配件"
+                                                else -> "自訂"
+                                            }
+                                            selectedCategory = mappedCategory
+                                            
+                                            val mappedSize = when(item.size) {
+                                                com.example.lostfoundai.data.ItemSize.VERY_SMALL -> "極小 (< 2cm)"
+                                                com.example.lostfoundai.data.ItemSize.SMALL -> "小 (5-10cm)"
+                                                com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (15-20cm)"
+                                                com.example.lostfoundai.data.ItemSize.LARGE -> "大 (> 20cm)"
+                                            }
+                                            selectedSize = mappedSize
+                                            
+                                            specifiedLocation = if (item.manualX != null && item.manualY != null) PointF(item.manualX, item.manualY) else null
+                                            showHistory = false
+                                        }) {
+                                            Text("✏️", style = MaterialTheme.typography.bodyMedium)
+                                        }
+                                        IconButton(onClick = {
+                                            searchViewModel.deleteItem(item.id)
+                                        }) {
+                                            Text("🗑️", style = MaterialTheme.typography.bodyMedium)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -443,21 +604,15 @@ fun MapScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                 } else {
                     // --- Form View ---
-                    var itemName by remember { mutableStateOf("") }
-                    
-                    var categoryExpanded by remember { mutableStateOf(false) }
-                    val categories = listOf("飾品", "隨身物品", "電子產品", "紙本", "衛浴用品", "家電配件", "自訂")
-                    var selectedCategory by remember { mutableStateOf(categories[0]) }
-                    var customCategory by remember { mutableStateOf("") }
-
-                    var sizeExpanded by remember { mutableStateOf(false) }
-                    val sizes = listOf("極小 (< 2cm)", "小 (5-10cm)", "中 (15-20cm)", "大 (> 20cm)", "自訂")
-                    var selectedSize by remember { mutableStateOf(sizes[0]) }
-                    var customSize by remember { mutableStateOf("") }
 
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Button(
-                            onClick = { showHistory = true },
+                            onClick = { 
+                                showHistory = true
+                                editingItem = null // reset edit state when returning to history
+                                itemName = ""
+                                specifiedLocation = null
+                            },
                             modifier = Modifier.fillMaxWidth(0.5f)
                         ) {
                             Text("查詢紀錄", color = Color.White)
@@ -470,6 +625,16 @@ fun MapScreen(
                         value = itemName,
                         onValueChange = { itemName = it },
                         label = { Text("物品名稱", color = Color(0xFF2A2A2A)) },
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.Black,
+                            unfocusedTextColor = Color.Black
+                        ),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        }),
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -485,15 +650,20 @@ fun MapScreen(
                             readOnly = true,
                             label = { Text("物品類別", color = Color(0xFF2A2A2A)) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.Black,
+                                unfocusedTextColor = Color.Black
+                            ),
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
                         ExposedDropdownMenu(
                             expanded = categoryExpanded,
-                            onDismissRequest = { categoryExpanded = false }
+                            onDismissRequest = { categoryExpanded = false },
+                            modifier = Modifier.background(Color.White)
                         ) {
                             categories.forEach { option ->
                                 DropdownMenuItem(
-                                    text = { Text(option, color = Color.White) },
+                                    text = { Text(option, color = Color.Black) },
                                     onClick = {
                                         selectedCategory = option
                                         categoryExpanded = false
@@ -508,6 +678,16 @@ fun MapScreen(
                             value = customCategory,
                             onValueChange = { customCategory = it },
                             label = { Text("請輸入自訂類別", color = Color(0xFF2A2A2A)) },
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.Black,
+                                unfocusedTextColor = Color.Black
+                            ),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                            }),
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -525,15 +705,20 @@ fun MapScreen(
                             readOnly = true,
                             label = { Text("物品大小", color = Color(0xFF2A2A2A)) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = sizeExpanded) },
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.Black,
+                                unfocusedTextColor = Color.Black
+                            ),
                             modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
                         ExposedDropdownMenu(
                             expanded = sizeExpanded,
-                            onDismissRequest = { sizeExpanded = false }
+                            onDismissRequest = { sizeExpanded = false },
+                            modifier = Modifier.background(Color.White)
                         ) {
                             sizes.forEach { option ->
                                 DropdownMenuItem(
-                                    text = { Text(option, color = Color.White) },
+                                    text = { Text(option, color = Color.Black) },
                                     onClick = {
                                         selectedSize = option
                                         sizeExpanded = false
@@ -548,50 +733,111 @@ fun MapScreen(
                             value = customSize,
                             onValueChange = { customSize = it },
                             label = { Text("請輸入自訂大小", color = Color(0xFF2A2A2A)) },
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.Black,
+                                unfocusedTextColor = Color.Black
+                            ),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = {
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                            }),
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
 
                     Spacer(modifier = Modifier.height(32.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        Button(
-                            onClick = {
-                                val newItemId = searchViewModel.addMissingItem(
-                                    name = itemName.ifEmpty { "新物品" },
-                                    category = com.example.lostfoundai.data.ItemCategory.OTHER,
-                                    size = com.example.lostfoundai.data.ItemSize.MEDIUM,
-                                    traits = "自訂特徵",
-                                    weight = "Medium",
-                                    location = "地圖"
-                                )
-                                mapViewModel.startAIPrediction(newItemId)
-                                showSearchSheet = false
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("AI 尋找", color = Color.White)
+                    if (specifiedLocation == null) {
+                        Text(
+                            text = "若沒有指定位置將會預設為 AI 尋找",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(bottom = 8.dp).align(Alignment.CenterHorizontally)
+                        )
+                    }
+
+                    if (specifiedLocation != null) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { specifiedLocation = null },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("取消指定", color = Color(0xFF1A1A1A))
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    showSearchSheet = false
+                                    isSpecifyingLocation = true
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("重新指定", color = Color(0xFF1A1A1A))
+                            }
                         }
-                        Spacer(modifier = Modifier.width(16.dp))
+                    } else {
                         OutlinedButton(
                             onClick = {
+                                showSearchSheet = false
+                                isSpecifyingLocation = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("指定位置", color = Color(0xFF1A1A1A))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            val cat = when(selectedCategory) {
+                                "飾品" -> com.example.lostfoundai.data.ItemCategory.ACCESSORY
+                                "隨身物品" -> com.example.lostfoundai.data.ItemCategory.BELONGINGS
+                                "電子產品" -> com.example.lostfoundai.data.ItemCategory.ELECTRONICS
+                                "紙本" -> com.example.lostfoundai.data.ItemCategory.PAPER
+                                "衛浴用品" -> com.example.lostfoundai.data.ItemCategory.BATHROOM
+                                "家電配件" -> com.example.lostfoundai.data.ItemCategory.APPLIANCE
+                                "衣物" -> com.example.lostfoundai.data.ItemCategory.CLOTHING
+                                else -> com.example.lostfoundai.data.ItemCategory.OTHER
+                            }
+                            val sz = when {
+                                selectedSize.startsWith("極小") -> com.example.lostfoundai.data.ItemSize.VERY_SMALL
+                                selectedSize.startsWith("小") -> com.example.lostfoundai.data.ItemSize.SMALL
+                                selectedSize.startsWith("中") -> com.example.lostfoundai.data.ItemSize.MEDIUM
+                                selectedSize.startsWith("大") -> com.example.lostfoundai.data.ItemSize.LARGE
+                                else -> com.example.lostfoundai.data.ItemSize.MEDIUM
+                            }
+                            
+                            if (editingItem != null) {
+                                searchViewModel.updateItem(editingItem!!.copy(
+                                    name = itemName.ifEmpty { "新物品" },
+                                    category = cat,
+                                    size = sz,
+                                    manualX = specifiedLocation?.x,
+                                    manualY = specifiedLocation?.y
+                                ))
+                            } else {
                                 searchViewModel.addMissingItem(
                                     name = itemName.ifEmpty { "新物品" },
-                                    category = com.example.lostfoundai.data.ItemCategory.OTHER,
-                                    size = com.example.lostfoundai.data.ItemSize.MEDIUM,
+                                    category = cat,
+                                    size = sz,
                                     traits = "自訂特徵",
                                     weight = "Medium",
-                                    location = "地圖"
+                                    location = "地圖",
+                                    manualX = specifiedLocation?.x,
+                                    manualY = specifiedLocation?.y
                                 )
-                                showHistory = true
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("新增物品", color = Color(0xFF1A1A1A))
-                        }
+                            }
+                            editingItem = null
+                            specifiedLocation = null
+                            itemName = ""
+                            showHistory = true
+                        },
+                        modifier = Modifier.fillMaxWidth(0.6f).align(Alignment.CenterHorizontally)
+                    ) {
+                        Text(if (editingItem != null) "完成編輯" else "完成新增", color = Color.White)
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
@@ -817,7 +1063,9 @@ fun MapCanvas(
     boundaryVertices: List<PointF>,
     isDrawingBoundary: Boolean,
     drawingVertices: List<PointF>,
-    onDrawingTap: (PointF) -> Unit,
+    isSpecifyingLocation: Boolean,
+    specifiedLocation: PointF?,
+    onCanvasTap: (PointF) -> Unit,
     onObjectMove: (String, Float, Float) -> Unit,
     onDeleteObject: (String) -> Unit,
     gridEnabled: Boolean
@@ -851,9 +1099,9 @@ fun MapCanvas(
                     currentOnOffsetChange(currentMapOffset + pan)
                 }
             }
-            .pointerInput(isDrawingBoundary) {
+            .pointerInput(isDrawingBoundary, isSpecifyingLocation) {
                 detectTapGestures(onTap = { tapOffset ->
-                    if (isDrawingBoundary) {
+                    if (isDrawingBoundary || isSpecifyingLocation) {
                         // Convert screen tap to map virtual dp coordinates
                         val dens = density.toFloat()
                         val centerX = size.width / 2f
@@ -862,7 +1110,7 @@ fun MapCanvas(
                         val mapPxY = (tapOffset.y - currentMapOffset.y - centerY) / currentMapScale + centerY
                         val virtualX = mapPxX / dens
                         val virtualY = mapPxY / dens
-                        onDrawingTap(PointF(virtualX, virtualY))
+                        onCanvasTap(PointF(virtualX, virtualY))
                     } else {
                         selectedObjectId = null
                     }
@@ -1022,28 +1270,25 @@ fun MapCanvas(
                             }
 
                             if (!isPosValid(targetX, obj.y)) {
-                                // Blocked. Attempt tiny step or snap
-                                val clampedX = BoundaryUtils.clampRectToPolygon(
-                                    targetX, obj.y, obj.width, obj.height,
-                                    obj.x, obj.y, true, effectiveBoundary
-                                ).x
-                                
-                                // Check if clampedX is also blocked by objects
-                                if (isPosValid(clampedX, obj.y)) {
-                                    targetX = clampedX
+                                // Blocked. Check object collision first
+                                val collidingX = mapObjects.find { other ->
+                                    other.id != obj.id &&
+                                    targetX < other.x + other.width && targetX + obj.width > other.x &&
+                                    obj.y < other.y + other.height && obj.y + obj.height > other.y
+                                }
+                                if (collidingX != null) {
+                                    val snapX = if (stepXDp > 0) collidingX.x - obj.width else collidingX.x + collidingX.width
+                                    if (isPosValid(snapX, obj.y)) targetX = snapX else canMoveX = false
                                 } else {
-                                    // Still blocked, try to find the gap near objects
-                                    val collidingX = mapObjects.find { other ->
-                                        other.id != obj.id &&
-                                        targetX < other.x + other.width && targetX + obj.width > other.x &&
-                                        obj.y < other.y + other.height && obj.y + obj.height > other.y
+                                    // Blocked by boundary. Use binary search to snap to the edge.
+                                    var low = 0f
+                                    var high = stepXDp
+                                    for (i in 0..5) {
+                                        val mid = (low + high) / 2
+                                        if (isPosValid(obj.x + mid, obj.y)) low = mid else high = mid
                                     }
-                                    if (collidingX != null) {
-                                        val snapX = if (stepXDp > 0) collidingX.x - obj.width else collidingX.x + collidingX.width
-                                        if (isPosValid(snapX, obj.y)) targetX = snapX else canMoveX = false
-                                    } else {
-                                        canMoveX = false
-                                    }
+                                    targetX = obj.x + low
+                                    if (targetX == obj.x) canMoveX = false
                                 }
                             }
                             val finalX = if (canMoveX) targetX else obj.x
@@ -1053,25 +1298,24 @@ fun MapCanvas(
                             var canMoveY = true
                             
                             if (!isPosValid(finalX, targetY)) {
-                                val clampedY = BoundaryUtils.clampRectToPolygon(
-                                    finalX, targetY, obj.width, obj.height,
-                                    finalX, obj.y, true, effectiveBoundary
-                                ).y
-                                
-                                if (isPosValid(finalX, clampedY)) {
-                                    targetY = clampedY
+                                val collidingY = mapObjects.find { other ->
+                                    other.id != obj.id &&
+                                    finalX < other.x + other.width && finalX + obj.width > other.x &&
+                                    targetY < other.y + other.height && targetY + obj.height > other.y
+                                }
+                                if (collidingY != null) {
+                                    val snapY = if (stepYDp > 0) collidingY.y - obj.height else collidingY.y + collidingY.height
+                                    if (isPosValid(finalX, snapY)) targetY = snapY else canMoveY = false
                                 } else {
-                                    val collidingY = mapObjects.find { other ->
-                                        other.id != obj.id &&
-                                        finalX < other.x + other.width && finalX + obj.width > other.x &&
-                                        targetY < other.y + other.height && targetY + obj.height > other.y
+                                    // Blocked by boundary. Use binary search to snap to the edge.
+                                    var low = 0f
+                                    var high = stepYDp
+                                    for (i in 0..5) {
+                                        val mid = (low + high) / 2
+                                        if (isPosValid(finalX, obj.y + mid)) low = mid else high = mid
                                     }
-                                    if (collidingY != null) {
-                                        val snapY = if (stepYDp > 0) collidingY.y - obj.height else collidingY.y + collidingY.height
-                                        if (isPosValid(finalX, snapY)) targetY = snapY else canMoveY = false
-                                    } else {
-                                        canMoveY = false
-                                    }
+                                    targetY = obj.y + low
+                                    if (targetY == obj.y) canMoveY = false
                                 }
                             }
                             val finalY = if (canMoveY) targetY else obj.y
@@ -1085,13 +1329,20 @@ fun MapCanvas(
                 )
             }
             
-            // Draw Predictions
+            // Draw Predictions and Manual Location
             Canvas(modifier = Modifier.fillMaxSize()) {
                 predictedSpots.forEach { spot ->
                     drawCircle(
                         color = Color.Red.copy(alpha = 0.6f),
                         radius = 40f,
                         center = Offset(spot.first, spot.second)
+                    )
+                }
+                specifiedLocation?.let { loc ->
+                    drawCircle(
+                        color = Color.Blue.copy(alpha = 0.6f),
+                        radius = 40f,
+                        center = Offset(loc.x * density, loc.y * density)
                     )
                 }
             }
@@ -1221,6 +1472,59 @@ fun MapObjectView(
                     modifier = Modifier.fillMaxSize().padding(4.dp)
                 )
             }
+        }
+    }
+}
+
+fun getSizeDisplay(category: com.example.lostfoundai.data.ItemCategory, size: com.example.lostfoundai.data.ItemSize): String {
+    return when (category) {
+        com.example.lostfoundai.data.ItemCategory.ACCESSORY -> when (size) {
+            com.example.lostfoundai.data.ItemSize.VERY_SMALL -> "極小 (< 2cm)"
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (2-5cm)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (5-10cm)"
+            else -> "中 (5-10cm)"
+        }
+        com.example.lostfoundai.data.ItemCategory.BELONGINGS -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (5-15cm)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (15-30cm)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (> 30cm)"
+            else -> "小 (5-15cm)"
+        }
+        com.example.lostfoundai.data.ItemCategory.ELECTRONICS -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (手機/滑鼠)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (平板/鍵盤)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (筆電/螢幕)"
+            else -> "小 (手機/滑鼠)"
+        }
+        com.example.lostfoundai.data.ItemCategory.PAPER -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (名片/票據)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (A5/筆記本)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (A4/文件夾)"
+            else -> "小 (名片/票據)"
+        }
+        com.example.lostfoundai.data.ItemCategory.BATHROOM -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (牙刷/刮鬍刀)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (瓶罐/毛巾)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (浴巾/臉盆)"
+            else -> "小 (牙刷/刮鬍刀)"
+        }
+        com.example.lostfoundai.data.ItemCategory.APPLIANCE -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (遙控器/線材)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (吹風機/快煮壺)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (風扇/吸塵器)"
+            else -> "小 (遙控器/線材)"
+        }
+        com.example.lostfoundai.data.ItemCategory.CLOTHING -> when (size) {
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小 (襪子/內衣)"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中 (上衣/褲子)"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大 (外套/大衣)"
+            else -> "小 (襪子/內衣)"
+        }
+        else -> when (size) {
+            com.example.lostfoundai.data.ItemSize.VERY_SMALL -> "極小"
+            com.example.lostfoundai.data.ItemSize.SMALL -> "小"
+            com.example.lostfoundai.data.ItemSize.MEDIUM -> "中"
+            com.example.lostfoundai.data.ItemSize.LARGE -> "大"
         }
     }
 }

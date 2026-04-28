@@ -16,6 +16,7 @@ enum class ItemCategory {
     PAPER,        // 紙本
     BATHROOM,     // 衛浴用品
     APPLIANCE,    // 家電配件
+    CLOTHING,     // 衣物
     OTHER
 }
 
@@ -27,7 +28,9 @@ data class MissingItem(
     val size: ItemSize,
     val physicalTraits: String,
     val defaultWeightLevel: String, // "High", "Medium", "Low", "Very Low"
-    val lastKnownLocationDesc: String = ""
+    val lastKnownLocationDesc: String = "",
+    val manualX: Float? = null,
+    val manualY: Float? = null
 )
 
 // Represents objects defined locally on the 2D Map (furniture, walls)
@@ -73,6 +76,11 @@ enum class RoomShapePreset {
 
 // 2D 座標點（單位為 dp）
 data class PointF(val x: Float, val y: Float)
+
+data class RoomData(
+    val id: String,
+    val name: String
+)
 
 // 邊界多邊形：由頂點組成的閉合路徑
 data class RoomBoundary(

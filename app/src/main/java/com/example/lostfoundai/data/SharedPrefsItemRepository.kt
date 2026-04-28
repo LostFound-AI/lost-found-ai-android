@@ -6,47 +6,116 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.UUID
 
 class SharedPrefsItemRepository(context: Context) : ItemRepository {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("lostfoundai_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
 
-    private val itemsFlow = MutableStateFlow<List<MissingItem>>(loadItems())
-    private val mapObjectsFlow = MutableStateFlow<List<MapObject>>(loadMapObjects())
+    private var currentRoomId: String = "default"
 
-    private fun loadItems(): List<MissingItem> {
-        val json = prefs.getString("missing_items", null)
-        return if (json != null) {
-            val type = object : TypeToken<List<MissingItem>>() {}.type
-            gson.fromJson(json, type)
-        } else {
-            // Default initial items
-            listOf(
-                MissingItem(name = "戒指", category = ItemCategory.ACCESSORY, size = ItemSize.VERY_SMALL, physicalTraits = "易滾動、易掉入縫隙", defaultWeightLevel = "High"),
-                MissingItem(name = "護照", category = ItemCategory.PAPER, size = ItemSize.SMALL, physicalTraits = "輕盈、易受風吹移動", defaultWeightLevel = "Medium")
-            )
+    private val roomsFlow = MutableStateFlow<List<RoomData>>(emptyList())
+    private val itemsFlow = MutableStateFlow<List<MissingItem>>(emptyList())
+    private val mapObjectsFlow = MutableStateFlow<List<MapObject>>(emptyList())
+    private val roomBoundaryFlow = MutableStateFlow(RoomBoundary())
+    private val savedBoundariesFlow = MutableStateFlow<List<SavedBoundary>>(emptyList())
+    private val gridEnabledFlow = MutableStateFlow(prefs.getBoolean("is_grid_enabled", true))
+
+    init {
+        migrateLegacyData()
+        roomsFlow.value = loadRooms()
+        
+        // Load data for initial room
+        reloadRoomData()
+    }
+
+    private fun migrateLegacyData() {
+        if (!prefs.contains("rooms") && (prefs.contains("missing_items") || prefs.contains("map_objects"))) {
+            // Migrate
+            val legacyItems = prefs.getString("missing_items", null)
+            val legacyObjects = prefs.getString("map_objects", null)
+            val legacyBoundary = prefs.getString("room_boundary", null)
+
+            prefs.edit().apply {
+                if (legacyItems != null) putString("default_missing_items", legacyItems)
+                if (legacyObjects != null) putString("default_map_objects", legacyObjects)
+                if (legacyBoundary != null) putString("default_room_boundary", legacyBoundary)
+                remove("missing_items")
+                remove("map_objects")
+                remove("room_boundary")
+            }.apply()
         }
     }
 
-    private fun saveItems(items: List<MissingItem>) {
-        prefs.edit().putString("missing_items", gson.toJson(items)).apply()
-        itemsFlow.value = items
+    private fun reloadRoomData() {
+        itemsFlow.value = loadItems()
+        mapObjectsFlow.value = loadMapObjects()
+        roomBoundaryFlow.value = loadRoomBoundary()
+        savedBoundariesFlow.value = loadSavedBoundaries()
     }
 
-    private fun loadMapObjects(): List<MapObject> {
-        val json = prefs.getString("map_objects", null)
+    // --- Room Management ---
+
+    private fun loadRooms(): List<RoomData> {
+        val json = prefs.getString("rooms", null)
         return if (json != null) {
-            val type = object : TypeToken<List<MapObject>>() {}.type
+            val type = object : TypeToken<List<RoomData>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            val defaultRoom = RoomData("default", "預設房間")
+            saveRooms(listOf(defaultRoom))
+            listOf(defaultRoom)
+        }
+    }
+
+    private fun saveRooms(rooms: List<RoomData>) {
+        prefs.edit().putString("rooms", gson.toJson(rooms)).apply()
+        roomsFlow.value = rooms
+    }
+
+    override fun getRooms(): Flow<List<RoomData>> = roomsFlow
+
+    override fun addRoom(name: String) {
+        val newId = UUID.randomUUID().toString()
+        val current = roomsFlow.value.toMutableList()
+        current.add(RoomData(newId, name))
+        saveRooms(current)
+    }
+
+    override fun deleteRoom(roomId: String) {
+        if (roomId == "default") return // Cannot delete default room
+        val current = roomsFlow.value.filter { it.id != roomId }
+        saveRooms(current)
+        
+        // Cleanup room data from prefs
+        prefs.edit().apply {
+            remove("${roomId}_missing_items")
+            remove("${roomId}_map_objects")
+            remove("${roomId}_room_boundary")
+        }.apply()
+    }
+
+    override fun switchRoom(roomId: String) {
+        currentRoomId = roomId
+        reloadRoomData()
+    }
+
+    // --- Items ---
+
+    private fun loadItems(): List<MissingItem> {
+        val json = prefs.getString("${currentRoomId}_missing_items", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<MissingItem>>() {}.type
             gson.fromJson(json, type)
         } else {
             emptyList()
         }
     }
 
-    private fun saveMapObjects(objects: List<MapObject>) {
-        prefs.edit().putString("map_objects", gson.toJson(objects)).apply()
-        mapObjectsFlow.value = objects
+    private fun saveItems(items: List<MissingItem>) {
+        prefs.edit().putString("${currentRoomId}_missing_items", gson.toJson(items)).apply()
+        itemsFlow.value = items
     }
 
     override fun getAllItems(): Flow<List<MissingItem>> = itemsFlow
@@ -59,6 +128,41 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         val current = itemsFlow.value.toMutableList()
         current.add(0, item)
         saveItems(current)
+    }
+
+    override fun updateItem(item: MissingItem) {
+        val current = itemsFlow.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+            saveItems(current)
+        }
+    }
+
+    override fun deleteItem(id: String) {
+        val current = itemsFlow.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx != -1) {
+            current.removeAt(idx)
+            saveItems(current)
+        }
+    }
+
+    // --- Map Objects ---
+
+    private fun loadMapObjects(): List<MapObject> {
+        val json = prefs.getString("${currentRoomId}_map_objects", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<MapObject>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            emptyList()
+        }
+    }
+
+    private fun saveMapObjects(objects: List<MapObject>) {
+        prefs.edit().putString("${currentRoomId}_map_objects", gson.toJson(objects)).apply()
+        mapObjectsFlow.value = objects
     }
 
     override fun getMapObjects(): Flow<List<MapObject>> = mapObjectsFlow
@@ -87,21 +191,24 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         }
     }
 
+    override fun clearRoom() {
+        saveMapObjects(emptyList())
+        saveRoomBoundary(RoomBoundary())
+    }
+
     // --- Room Boundary ---
 
-    private val roomBoundaryFlow = MutableStateFlow<RoomBoundary>(loadRoomBoundary())
-
     private fun loadRoomBoundary(): RoomBoundary {
-        val json = prefs.getString("room_boundary", null)
+        val json = prefs.getString("${currentRoomId}_room_boundary", null)
         return if (json != null) {
             gson.fromJson(json, RoomBoundary::class.java)
         } else {
-            RoomBoundary() // default RECTANGLE with no vertices
+            RoomBoundary()
         }
     }
 
     private fun saveRoomBoundary(boundary: RoomBoundary) {
-        prefs.edit().putString("room_boundary", gson.toJson(boundary)).apply()
+        prefs.edit().putString("${currentRoomId}_room_boundary", gson.toJson(boundary)).apply()
         roomBoundaryFlow.value = boundary
     }
 
@@ -111,9 +218,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         saveRoomBoundary(boundary)
     }
 
-    // --- Saved Boundaries ---
-
-    private val savedBoundariesFlow = MutableStateFlow<List<SavedBoundary>>(loadSavedBoundaries())
+    // --- Saved Boundaries (Global across rooms) ---
 
     private fun loadSavedBoundaries(): List<SavedBoundary> {
         val json = prefs.getString("saved_boundaries", null)
@@ -146,7 +251,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         })
     }
 
-    private val gridEnabledFlow = MutableStateFlow(prefs.getBoolean("is_grid_enabled", true))
+    // --- Grid Enabled (Global) ---
 
     override fun isGridEnabled(): Flow<Boolean> = gridEnabledFlow
 

@@ -38,7 +38,9 @@ class SearchViewModel(
         size: ItemSize,
         traits: String,
         weight: String,
-        location: String
+        location: String,
+        manualX: Float? = null,
+        manualY: Float? = null
     ): String {
         val newItem = MissingItem(
             name = name,
@@ -46,9 +48,19 @@ class SearchViewModel(
             size = size,
             physicalTraits = traits,
             defaultWeightLevel = weight,
-            lastKnownLocationDesc = location
+            lastKnownLocationDesc = location,
+            manualX = manualX,
+            manualY = manualY
         )
         repository.addItem(newItem)
         return newItem.id
+    }
+
+    fun updateItem(item: MissingItem) {
+        repository.updateItem(item)
+    }
+
+    fun deleteItem(id: String) {
+        repository.deleteItem(id)
     }
 }

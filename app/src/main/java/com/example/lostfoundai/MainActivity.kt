@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
@@ -37,6 +39,22 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        if (ev?.action == android.view.MotionEvent.ACTION_DOWN) {
+            val v = currentFocus
+            if (v != null) {
+                val rect = android.graphics.Rect()
+                v.getGlobalVisibleRect(rect)
+                if (!rect.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
+                    v.clearFocus()
+                    val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                    imm.hideSoftInputFromWindow(v.windowToken, 0)
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
 }
 
 @Composable
@@ -51,11 +69,29 @@ fun LostFoundApp() {
     val mapViewModel = remember { MapViewModel(repository, predictionEngine) }
     val searchViewModel = remember { SearchViewModel(repository) }
 
-    NavHost(navController = navController, startDestination = "map") {
+    val rooms by repository.getRooms().collectAsState(initial = emptyList())
+
+    NavHost(navController = navController, startDestination = "home") {
+        composable("home") {
+            com.example.lostfoundai.ui.screens.HomeScreen(
+                rooms = rooms,
+                onEnterRoom = { roomId -> 
+                    repository.switchRoom(roomId)
+                    navController.navigate("map") 
+                },
+                onAddRoom = { name -> repository.addRoom(name) },
+                onDeleteRoom = { id -> repository.deleteRoom(id) }
+            )
+        }
         composable("map") {
             MapScreen(
                 mapViewModel = mapViewModel,
-                searchViewModel = searchViewModel
+                searchViewModel = searchViewModel,
+                onNavigateHome = {
+                    navController.navigate("home") {
+                        popUpTo(0)
+                    }
+                }
             )
         }
     }

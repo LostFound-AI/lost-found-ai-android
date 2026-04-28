@@ -8,16 +8,26 @@ interface ItemRepository {
     fun getAllItems(): Flow<List<MissingItem>>
     fun getItemById(id: String): MissingItem?
     fun addItem(item: MissingItem)
+    fun updateItem(item: MissingItem)
+    fun deleteItem(id: String)
     fun getMapObjects(): Flow<List<MapObject>>
     fun updateMapObject(obj: MapObject)
     fun addMapObject(obj: MapObject)
     fun removeMapObject(id: String)
+    fun clearRoom()
     fun getRoomBoundary(): Flow<RoomBoundary>
     fun setRoomBoundary(boundary: RoomBoundary)
     fun getSavedBoundaries(): Flow<List<SavedBoundary>>
     fun addSavedBoundary(boundary: SavedBoundary)
     fun removeSavedBoundary(id: String)
     fun renameSavedBoundary(id: String, newName: String)
+
+    // Room Management
+    fun getRooms(): Flow<List<RoomData>>
+    fun addRoom(name: String)
+    fun deleteRoom(roomId: String)
+    fun switchRoom(roomId: String)
+
     fun isGridEnabled(): Flow<Boolean>
     fun setGridEnabled(enabled: Boolean)
 }
@@ -45,6 +55,24 @@ class InMemoryItemRepository : ItemRepository {
         itemsFlow.value = current
     }
 
+    override fun updateItem(item: MissingItem) {
+        val current = itemsFlow.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == item.id }
+        if (idx != -1) {
+            current[idx] = item
+            itemsFlow.value = current
+        }
+    }
+
+    override fun deleteItem(id: String) {
+        val current = itemsFlow.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx != -1) {
+            current.removeAt(idx)
+            itemsFlow.value = current
+        }
+    }
+
     override fun getMapObjects(): Flow<List<MapObject>> = mapObjectsFlow
 
     override fun updateMapObject(obj: MapObject) {
@@ -69,6 +97,11 @@ class InMemoryItemRepository : ItemRepository {
             current.removeAt(idx)
             mapObjectsFlow.value = current
         }
+    }
+
+    override fun clearRoom() {
+        mapObjectsFlow.value = emptyList()
+        roomBoundaryFlow.value = RoomBoundary()
     }
 
     private val roomBoundaryFlow = MutableStateFlow(RoomBoundary())
@@ -101,5 +134,24 @@ class InMemoryItemRepository : ItemRepository {
     override fun isGridEnabled(): Flow<Boolean> = gridEnabledFlow
     override fun setGridEnabled(enabled: Boolean) {
         gridEnabledFlow.value = enabled
+    }
+    private val roomsFlow = MutableStateFlow<List<RoomData>>(
+        listOf(RoomData("default", "預設房間"))
+    )
+
+    override fun getRooms(): Flow<List<RoomData>> = roomsFlow
+
+    override fun addRoom(name: String) {
+        val newId = java.util.UUID.randomUUID().toString()
+        roomsFlow.value = roomsFlow.value + RoomData(newId, name)
+    }
+
+    override fun deleteRoom(roomId: String) {
+        if (roomId == "default") return
+        roomsFlow.value = roomsFlow.value.filter { it.id != roomId }
+    }
+
+    override fun switchRoom(roomId: String) {
+        // Simple mock
     }
 }
