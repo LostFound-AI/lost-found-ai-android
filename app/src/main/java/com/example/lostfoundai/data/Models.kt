@@ -95,3 +95,87 @@ data class SavedBoundary(
     val name: String,
     val vertices: List<PointF>
 )
+
+fun MapObjectType.emoji(): String = when (this) {
+    MapObjectType.WALL -> "🧱"
+    MapObjectType.CORNER -> "📐"
+    MapObjectType.DOOR -> "🚪"
+    MapObjectType.WINDOW -> "🪟"
+    MapObjectType.BED -> "🛏"
+    MapObjectType.DESK -> "💻"
+    MapObjectType.SOFA -> "🛋"
+    MapObjectType.CABINET -> "🗄"
+    MapObjectType.BATHROOM_SINK -> "🚿"
+    MapObjectType.CHAIR -> "🪑"
+    MapObjectType.TABLE -> "🍽"
+    MapObjectType.BOOKSHELF -> "📚"
+    MapObjectType.WARDROBE -> "👔"
+    MapObjectType.FRIDGE -> "🧊"
+    MapObjectType.TV_STAND -> "📺"
+    MapObjectType.WASHING_MACHINE -> "🫧"
+    MapObjectType.SHOE_RACK -> "👟"
+    MapObjectType.TOILET -> "🚽"
+}
+
+fun MapObjectType.chineseName(): String = when (this) {
+    MapObjectType.WALL -> "牆壁"
+    MapObjectType.CORNER -> "轉角"
+    MapObjectType.DOOR -> "門"
+    MapObjectType.WINDOW -> "窗戶"
+    MapObjectType.BED -> "床"
+    MapObjectType.DESK -> "書桌"
+    MapObjectType.SOFA -> "沙發"
+    MapObjectType.CABINET -> "櫃子"
+    MapObjectType.BATHROOM_SINK -> "洗手台"
+    MapObjectType.CHAIR -> "椅子"
+    MapObjectType.TABLE -> "桌子"
+    MapObjectType.BOOKSHELF -> "書架"
+    MapObjectType.WARDROBE -> "衣櫃"
+    MapObjectType.FRIDGE -> "冰箱"
+    MapObjectType.TV_STAND -> "電視櫃"
+    MapObjectType.WASHING_MACHINE -> "洗衣機"
+    MapObjectType.SHOE_RACK -> "鞋架"
+    MapObjectType.TOILET -> "馬桶"
+}
+
+fun MapObjectType.defaultWidth(): Float = when (this) {
+    MapObjectType.WALL -> 120f
+    MapObjectType.CORNER -> 20f
+    MapObjectType.DOOR -> 60f
+    MapObjectType.WINDOW -> 80f
+    MapObjectType.BED -> 150f
+    MapObjectType.DESK -> 90f
+    MapObjectType.SOFA -> 150f
+    MapObjectType.CABINET -> 80f
+    MapObjectType.BATHROOM_SINK -> 50f
+    MapObjectType.CHAIR -> 50f
+    MapObjectType.TABLE -> 100f
+    MapObjectType.BOOKSHELF -> 90f
+    MapObjectType.WARDROBE -> 100f
+    MapObjectType.FRIDGE -> 60f
+    MapObjectType.TV_STAND -> 120f
+    MapObjectType.WASHING_MACHINE -> 60f
+    MapObjectType.SHOE_RACK -> 80f
+    MapObjectType.TOILET -> 50f
+}
+
+fun MapObjectType.defaultHeight(): Float = when (this) {
+    MapObjectType.WALL -> 15f
+    MapObjectType.CORNER -> 20f
+    MapObjectType.DOOR -> 15f
+    MapObjectType.WINDOW -> 10f
+    MapObjectType.BED -> 100f
+    MapObjectType.DESK -> 60f
+    MapObjectType.SOFA -> 70f
+    MapObjectType.CABINET -> 50f
+    MapObjectType.BATHROOM_SINK -> 40f
+    MapObjectType.CHAIR -> 50f
+    MapObjectType.TABLE -> 60f
+    MapObjectType.BOOKSHELF -> 30f
+    MapObjectType.WARDROBE -> 60f
+    MapObjectType.FRIDGE -> 60f
+    MapObjectType.TV_STAND -> 40f
+    MapObjectType.WASHING_MACHINE -> 60f
+    MapObjectType.SHOE_RACK -> 30f
+    MapObjectType.TOILET -> 70f
+}

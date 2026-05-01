@@ -10,7 +10,8 @@ import kotlin.math.sqrt
 
 class PredictionEngine {
 
-    // Returns top N high probability spots (x, y)
+    // Returns top N high-probability spots in dp coordinates.
+    // All inputs (mapObjects.x/y, walkPath) must also be in dp.
     fun calculatePrediction(
         item: MissingItem,
         mapObjects: List<MapObject>,
@@ -19,11 +20,26 @@ class PredictionEngine {
     ): List<Pair<Float, Float>> {
         val spots = mutableListOf<Pair<Pair<Float, Float>, Float>>()
 
-        // Generate a grid of points (step by 50px)
-        for (x in 0..1000 step 50) {
-            for (y in 0..1000 step 50) {
+        // Grid in dp — covers up to 800×1200dp (larger than any phone screen)
+        for (x in 0..800 step 20) {
+            for (y in 0..1200 step 20) {
+                val xf = x.toFloat()
+                val yf = y.toFloat()
+
+                // Skip positions occupied by solid large furniture
+                val isBlockedByFurniture = mapObjects.any { obj ->
+                    val solidTypes = setOf(
+                        MapObjectType.BED, MapObjectType.WARDROBE, MapObjectType.SOFA,
+                        MapObjectType.FRIDGE, MapObjectType.WASHING_MACHINE, MapObjectType.TABLE
+                    )
+                    obj.type in solidTypes &&
+                        xf >= obj.x && xf <= obj.x + obj.width &&
+                        yf >= obj.y && yf <= obj.y + obj.height
+                }
+                if (isBlockedByFurniture) continue
+
                 var pBase = 1.0f
-                var wSize = when (item.size) {
+                val wSize = when (item.size) {
                     ItemSize.VERY_SMALL -> 0.5f
                     ItemSize.SMALL -> 0.3f
                     ItemSize.MEDIUM -> 0.1f
@@ -33,43 +49,43 @@ class PredictionEngine {
                 var wLocation = 0.0f
                 var wGravity = 0.0f
 
-                // Rule B: Inertia Path - Distance to any path coordinate < 50px
+                // Rule B: Proximity to walk path (30dp radius)
                 for (p in walkPath) {
-                    val dist = distance(x.toFloat(), y.toFloat(), p.first, p.second)
-                    if (dist < 50f) {
-                        wPath += 0.3f
-                        break // cap 0.3
+                    if (distance(xf, yf, p.first, p.second) < 30f) {
+                        wPath = 0.3f
+                        break
                     }
                 }
 
                 for (obj in mapObjects) {
-                    val dist = distance(x.toFloat(), y.toFloat(), obj.x, obj.y)
-                    
-                    // Rule A: Gravity & Gap for small items within 30px
+                    val dist = distance(xf, yf, obj.x + obj.width / 2f, obj.y + obj.height / 2f)
+
+                    // Rule A: Gravity — small items fall near furniture edges (within 30dp)
                     if ((item.size == ItemSize.VERY_SMALL || item.size == ItemSize.SMALL) &&
-                        (obj.type == MapObjectType.BED || obj.type == MapObjectType.SOFA || obj.type == MapObjectType.DESK)) {
-                        if (dist < 80f) {
-                            wGravity = 0.5f // increased if near furniture
-                        }
+                        obj.type in setOf(MapObjectType.BED, MapObjectType.SOFA, MapObjectType.DESK,
+                            MapObjectType.CABINET, MapObjectType.TABLE)) {
+                        if (dist < 30f) wGravity = maxOf(wGravity, 0.5f)
                     }
 
-                    // Rule C: Affinity
-                    if (item.category == ItemCategory.BATHROOM && obj.type == MapObjectType.BATHROOM_SINK && dist < 100f) {
-                        wLocation += 0.5f
-                    }
-                    if (item.category == ItemCategory.ACCESSORY && (obj.type == MapObjectType.BED || obj.type == MapObjectType.CABINET) && dist < 100f) {
-                        wLocation += 0.5f
-                    }
-                    if (item.category == ItemCategory.ELECTRONICS && (obj.type == MapObjectType.BED || obj.type == MapObjectType.SOFA) && dist < 50f) {
-                        wLocation += 0.4f
+                    // Rule C: Category affinity (within 80dp of relevant furniture)
+                    when (item.category) {
+                        ItemCategory.BATHROOM ->
+                            if (obj.type == MapObjectType.BATHROOM_SINK && dist < 80f) wLocation += 0.5f
+                        ItemCategory.ACCESSORY ->
+                            if (obj.type in setOf(MapObjectType.BED, MapObjectType.CABINET, MapObjectType.DESK) && dist < 80f) wLocation += 0.4f
+                        ItemCategory.ELECTRONICS ->
+                            if (obj.type in setOf(MapObjectType.DESK, MapObjectType.TV_STAND, MapObjectType.BED) && dist < 80f) wLocation += 0.4f
+                        ItemCategory.CLOTHING ->
+                            if (obj.type in setOf(MapObjectType.WARDROBE, MapObjectType.CHAIR) && dist < 80f) wLocation += 0.4f
+                        ItemCategory.BELONGINGS ->
+                            if (obj.type in setOf(MapObjectType.DESK, MapObjectType.CABINET, MapObjectType.CHAIR) && dist < 80f) wLocation += 0.3f
+                        else -> {}
                     }
                 }
 
                 val pFinal = pBase * (1 + wSize + wPath + wLocation + wGravity)
-                
-                // Add tiny random noise to avoid duplicate scores
                 val noise = (Math.random() * 0.01).toFloat()
-                spots.add(Pair(Pair(x.toFloat(), y.toFloat()), pFinal + noise))
+                spots.add(Pair(Pair(xf, yf), pFinal + noise))
             }
         }
 

@@ -1,15 +1,51 @@
+# Built output
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+/build
+/app/release/
+
+# Gradle
+.gradle/
+gradle-app.setting
+
+# Local config (contains SDK path — machine-specific)
+local.properties
+
+# IntelliJ / Android Studio — machine-specific files
 *.iml
-.gradle
-/local.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
-.DS_Store
-/build
+/.idea/deploymentTargetSelector.xml
+/.idea/deviceManager.xml
+/.idea/AndroidProjectSystem.xml
+/.idea/compiler.xml
+
+# Signing keys — never commit these
+*.jks
+*.keystore
+
+# Google Services / Firebase — contains API keys
+google-services.json
+
+# Captures and profiling
 /captures
+
+# External native build
 .externalNativeBuild
 .cxx
-local.properties
+
+# Kotlin build cache
+.kotlin/
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
