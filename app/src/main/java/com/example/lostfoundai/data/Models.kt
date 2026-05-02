@@ -30,7 +30,9 @@ data class MissingItem(
     val defaultWeightLevel: String, // "High", "Medium", "Low", "Very Low"
     val lastKnownLocationDesc: String = "",
     val manualX: Float? = null,
-    val manualY: Float? = null
+    val manualY: Float? = null,
+    val linkedFurnitureId: String? = null,
+    val photoPath: String? = null
 )
 
 // Represents objects defined locally on the 2D Map (furniture, walls)

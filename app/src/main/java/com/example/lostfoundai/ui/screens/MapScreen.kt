@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,6 +49,15 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.content
+import com.example.lostfoundai.ai.GeminiConfig
 import com.example.lostfoundai.R
 import com.example.lostfoundai.data.MapObject
 import com.example.lostfoundai.data.MapObjectType
@@ -161,6 +171,59 @@ fun MapScreen(
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    var selectedFurniture by remember { mutableStateOf<MapObject?>(null) }
+    var showFurnitureSheet by remember { mutableStateOf(false) }
+    var preLinkFurnitureId by remember { mutableStateOf<String?>(null) }
+    var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
+    var isAnalyzingPhoto by remember { mutableStateOf(false) }
+    var detectedChips by remember { mutableStateOf<List<String>>(emptyList()) }
+    val context = LocalContext.current
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        bitmap?.let { bmp ->
+            // Save photo to internal storage
+            val file = java.io.File(context.filesDir, "item_${System.currentTimeMillis()}.jpg")
+            java.io.FileOutputStream(file).use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            capturedPhotoPath = file.absolutePath
+            isAnalyzingPhoto = true
+            detectedChips = emptyList()
+            coroutineScope.launch {
+                try {
+                    val model = GenerativeModel(
+                        modelName = "gemini-2.5-flash",
+                        apiKey = GeminiConfig.API_KEY
+                    )
+                    val response = model.generateContent(
+                        content {
+                            image(bmp)
+                            text(
+                                "圖片中的主要物品是什麼？只回覆 JSON，不要任何其他文字：\n" +
+                                "{\"name\":\"物品名稱（繁體中文，2-5字）\",\"category\":\"類別\"}\n" +
+                                "category 只能填以下其中之一：飾品、隨身物品、電子產品、紙本、衛浴用品、家電配件、衣物、其他"
+                            )
+                        }
+                    )
+                    val raw = response.text ?: return@launch
+                    val jsonStr = Regex("""\{[^}]+\}""").find(raw)?.value ?: return@launch
+                    val json = org.json.JSONObject(jsonStr)
+                    val detectedName = json.optString("name", "")
+                    val detectedCat = json.optString("category", "其他")
+                    isAnalyzingPhoto = false
+                    if (detectedName.isNotEmpty()) {
+                        detectedChips = listOf(detectedName)
+                        if (itemName.isEmpty()) itemName = detectedName
+                    }
+                    if (detectedCat in categories) selectedCategory = detectedCat
+                } catch (_: Exception) {
+                    isAnalyzingPhoto = false
+                }
+            }
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -298,6 +361,10 @@ fun MapScreen(
                         },
                         onDeleteObject = { id ->
                             mapViewModel.removeMapObject(id)
+                        },
+                        onFurnitureTap = { furniture ->
+                            selectedFurniture = furniture
+                            showFurnitureSheet = true
                         },
                         gridEnabled = gridEnabled
                     )
@@ -723,6 +790,32 @@ fun MapScreen(
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                        if (item.linkedFurnitureId != null) {
+                                            val linkedFurnitureObj = mapObjects.find { it.id == item.linkedFurnitureId }
+                                            if (linkedFurnitureObj != null) {
+                                                Text(
+                                                    text = "${linkedFurnitureObj.type.emoji()} ${linkedFurnitureObj.type.chineseName()}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color(0xFF4CAF50)
+                                                )
+                                            }
+                                        }
+                                        if (item.photoPath != null) {
+                                            val photoBmp = remember(item.photoPath) {
+                                                BitmapFactory.decodeFile(item.photoPath)
+                                            }
+                                            photoBmp?.let { bmp ->
+                                                Spacer(Modifier.height(4.dp))
+                                                Image(
+                                                    bitmap = bmp.asImageBitmap(),
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp)),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            }
+                                        }
                                     }
                                     Row {
                                         IconButton(onClick = {
@@ -770,19 +863,52 @@ fun MapScreen(
 
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Button(
-                            onClick = { 
+                            onClick = {
                                 showHistory = true
                                 editingItem = null // reset edit state when returning to history
                                 itemName = ""
                                 specifiedLocation = null
+                                capturedPhotoPath = null
+                                detectedChips = emptyList()
+                                preLinkFurnitureId = null
                             },
                             modifier = Modifier.fillMaxWidth(0.5f)
                         ) {
                             Text("查詢紀錄", color = Color.White)
                         }
                     }
-                    
-                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (preLinkFurnitureId != null) {
+                        val linkedFurnitureObj = mapObjects.find { it.id == preLinkFurnitureId }
+                        if (linkedFurnitureObj != null) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "${linkedFurnitureObj.type.emoji()} 存放至：${linkedFurnitureObj.type.chineseName()}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color(0xFF2E7D32)
+                                    )
+                                    TextButton(onClick = { preLinkFurnitureId = null }) {
+                                        Text("移除", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
                     
                     OutlinedTextField(
                         value = itemName,
@@ -910,7 +1036,81 @@ fun MapScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(32.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                try { cameraLauncher.launch(null) } catch (_: Exception) {}
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (capturedPhotoPath != null) "重新拍照 📷" else "拍照 📷")
+                        }
+                        if (capturedPhotoPath != null) {
+                            val photoBitmap = remember(capturedPhotoPath) {
+                                BitmapFactory.decodeFile(capturedPhotoPath)
+                            }
+                            photoBitmap?.let { bmp ->
+                                Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = "已拍攝照片",
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                        }
+                    }
+                    if (isAnalyzingPhoto) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = PrimaryIndigo)
+                            Text("AI 辨識中…", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    } else if (detectedChips.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "🔍 點選標籤自動填入名稱：",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                detectedChips.forEach { label ->
+                                    val display = labelToChineseName(label) ?: label
+                                    SuggestionChip(
+                                        onClick = { itemName = display },
+                                        label = { Text(display, style = MaterialTheme.typography.labelSmall) },
+                                        colors = SuggestionChipDefaults.suggestionChipColors(
+                                            containerColor = Color(0xFFEEF0FF)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     if (specifiedLocation == null) {
                         Text(
@@ -979,7 +1179,8 @@ fun MapScreen(
                                     category = cat,
                                     size = sz,
                                     manualX = specifiedLocation?.x,
-                                    manualY = specifiedLocation?.y
+                                    manualY = specifiedLocation?.y,
+                                    photoPath = capturedPhotoPath ?: editingItem!!.photoPath
                                 ))
                             } else {
                                 searchViewModel.addMissingItem(
@@ -990,12 +1191,17 @@ fun MapScreen(
                                     weight = "Medium",
                                     location = "地圖",
                                     manualX = specifiedLocation?.x,
-                                    manualY = specifiedLocation?.y
+                                    manualY = specifiedLocation?.y,
+                                    linkedFurnitureId = preLinkFurnitureId,
+                                    photoPath = capturedPhotoPath
                                 )
                             }
                             editingItem = null
                             specifiedLocation = null
                             itemName = ""
+                            capturedPhotoPath = null
+                            detectedChips = emptyList()
+                            preLinkFurnitureId = null
                             showHistory = true
                         },
                         modifier = Modifier.fillMaxWidth(0.6f).align(Alignment.CenterHorizontally)
@@ -1182,6 +1388,37 @@ fun MapScreen(
         )
     }
 
+    // --- Furniture Detail Sheet ---
+    if (showFurnitureSheet && selectedFurniture != null) {
+        val furniture = selectedFurniture!!
+        val linkedItems = searchItems.filter { it.linkedFurnitureId == furniture.id }
+        FurnitureDetailSheet(
+            furniture = furniture,
+            linkedItems = linkedItems,
+            onDismiss = { showFurnitureSheet = false },
+            onAddItem = {
+                showFurnitureSheet = false
+                preLinkFurnitureId = furniture.id
+                specifiedLocation = PointF(furniture.x + furniture.width / 2f, furniture.y + furniture.height / 2f)
+                showHistory = false
+                showSearchSheet = true
+            },
+            onFindItem = { item ->
+                if (item.manualX != null && item.manualY != null) {
+                    mapViewModel.clearPredictedSpots()
+                    specifiedLocation = PointF(item.manualX, item.manualY)
+                } else {
+                    mapViewModel.startAIPrediction(item.id)
+                    specifiedLocation = null
+                }
+                showFurnitureSheet = false
+            },
+            onDeleteItem = { id ->
+                searchViewModel.deleteItem(id)
+            }
+        )
+    }
+
     // --- Rename dialog ---
     if (renamingBoundary != null) {
         AlertDialog(
@@ -1234,6 +1471,7 @@ fun MapCanvas(
     onCanvasTap: (PointF) -> Unit,
     onObjectMove: (String, Float, Float) -> Unit,
     onDeleteObject: (String) -> Unit,
+    onFurnitureTap: ((MapObject) -> Unit)? = null,
     gridEnabled: Boolean
 ) {
     var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
@@ -1384,12 +1622,19 @@ fun MapCanvas(
                 }
             }
 
+            val itemCountMap = storedItems
+                .filter { it.linkedFurnitureId != null }
+                .groupBy { it.linkedFurnitureId!! }
+                .mapValues { it.value.size }
+
             mapObjects.forEach { obj ->
                 MapObjectView(
                     obj = obj,
                     isEditing = isEditing,
                     isSelected = (selectedObjectId == obj.id),
+                    itemCount = itemCountMap[obj.id] ?: 0,
                     onClick = { if (isEditing) selectedObjectId = obj.id },
+                    onViewTap = if (!isEditing) onFurnitureTap?.let { cb -> { cb(obj) } } else null,
                     onDelete = {
                         onDeleteObject(obj.id)
                         selectedObjectId = null
@@ -1641,7 +1886,9 @@ fun MapObjectView(
     obj: MapObject,
     isEditing: Boolean,
     isSelected: Boolean,
+    itemCount: Int = 0,
     onClick: () -> Unit,
+    onViewTap: (() -> Unit)? = null,
     onDelete: () -> Unit,
     onDrag: (Float, Float, Float, Float) -> Unit,
     onDragEnd: () -> Unit
@@ -1681,6 +1928,10 @@ fun MapObjectView(
                             )
                         }
                     }
+                } else if (onViewTap != null) {
+                    this.pointerInput(Unit) {
+                        detectTapGestures(onTap = { onViewTap() })
+                    }
                 } else this
             }
     ) {
@@ -1689,6 +1940,27 @@ fun MapObjectView(
             isBed = obj.type == MapObjectType.BED,
             modifier = Modifier.fillMaxSize()
         )
+
+        if (!isEditing && itemCount > 0) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 4.dp, y = (-4).dp)
+                    .size(20.dp),
+                shape = CircleShape,
+                color = PrimaryIndigo,
+                shadowElevation = 2.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = itemCount.toString(),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp
+                    )
+                }
+            }
+        }
 
         if (isSelected && isEditing) {
             Surface(
@@ -1767,6 +2039,126 @@ fun getSizeDisplay(category: com.example.lostfoundai.data.ItemCategory, size: co
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FurnitureDetailSheet(
+    furniture: MapObject,
+    linkedItems: List<MissingItem>,
+    onDismiss: () -> Unit,
+    onAddItem: () -> Unit,
+    onFindItem: (MissingItem) -> Unit,
+    onDeleteItem: (String) -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(furniture.type.emoji(), fontSize = 28.sp)
+                Column {
+                    Text(
+                        furniture.type.chineseName(),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.Black
+                    )
+                    Text(
+                        "已存放 ${linkedItems.size} 件物品",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (linkedItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("此家具尚未存放任何物品", color = Color.Gray)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 300.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(linkedItems) { item ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FF))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        item.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = Color.Black
+                                    )
+                                    Text(
+                                        getSizeDisplay(item.category, item.size),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
+                                    if (item.photoPath != null) {
+                                        val bmp = remember(item.photoPath) {
+                                            BitmapFactory.decodeFile(item.photoPath)
+                                        }
+                                        bmp?.let {
+                                            Spacer(Modifier.height(4.dp))
+                                            Image(
+                                                bitmap = it.asImageBitmap(),
+                                                contentDescription = null,
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        }
+                                    }
+                                }
+                                Row {
+                                    TextButton(onClick = { onFindItem(item) }) {
+                                        Text("尋找", color = PrimaryIndigo)
+                                    }
+                                    IconButton(onClick = { onDeleteItem(item.id) }) {
+                                        Text("🗑️")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = onAddItem,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo)
+            ) {
+                Text("＋ 新增物品到此家具", color = Color.White)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+    }
+}
+
 @Composable
 private fun LegendRow(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1774,3 +2166,57 @@ private fun LegendRow(color: Color, label: String) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = OnSurfaceVariantColor)
     }
 }
+
+private fun String.containsAny(vararg terms: String) =
+    terms.any { this.contains(it, ignoreCase = true) }
+
+fun labelToChineseName(label: String): String? = when {
+    label.containsAny("mobile phone", "smartphone", "cell phone", "iphone") -> "手機"
+    label.containsAny("laptop", "notebook computer", "macbook") -> "筆記型電腦"
+    label.containsAny("computer keyboard", "keyboard") -> "鍵盤"
+    label.containsAny("computer mouse") -> "滑鼠"
+    label.containsAny("tablet computer", "ipad", "tablet") -> "平板"
+    label.containsAny("headphone", "earphone", "earbuds", "airpods", "in-ear") -> "耳機"
+    label.containsAny("charger", "power adapter", "power bank") -> "充電器"
+    label.containsAny("cable", "usb cable", "charging cable", "wire") -> "傳輸線"
+    label.containsAny("camera", "digital camera") -> "相機"
+    label.containsAny("remote control", "remote") -> "遙控器"
+    label.containsAny("smart speaker", "speaker") -> "喇叭"
+    label.containsAny("watch", "wristwatch", "smartwatch") -> "手錶"
+    label.containsAny("glasses", "spectacles", "eyewear", "sunglasses") -> "眼鏡"
+    label.containsAny("key", "keys", "keychain", "house key", "car key") -> "鑰匙"
+    label.containsAny("wallet", "billfold", "coin purse") -> "錢包"
+    label.containsAny("handbag", "purse") -> "手提包"
+    label.containsAny("backpack", "rucksack") -> "背包"
+    label.containsAny("bag", "tote") -> "袋子"
+    label.containsAny("umbrella") -> "雨傘"
+    label.containsAny("book", "textbook") -> "書"
+    label.containsAny("notebook", "notepad") -> "筆記本"
+    label.containsAny("document", "paper", "paperwork") -> "文件"
+    label.containsAny("magazine") -> "雜誌"
+    label.containsAny("shoe", "sneaker", "boot", "footwear") -> "鞋子"
+    label.containsAny("sock") -> "襪子"
+    label.containsAny("shirt", "t-shirt", "top") -> "上衣"
+    label.containsAny("pants", "trousers", "jeans") -> "褲子"
+    label.containsAny("jacket", "coat", "hoodie") -> "外套"
+    label.containsAny("ring") -> "戒指"
+    label.containsAny("necklace", "pendant", "chain") -> "項鍊"
+    label.containsAny("bracelet", "bangle", "wristband") -> "手環"
+    label.containsAny("earring") -> "耳環"
+    label.containsAny("toothbrush") -> "牙刷"
+    label.containsAny("towel") -> "毛巾"
+    label.containsAny("razor") -> "刮鬍刀"
+    label.containsAny("comb", "hairbrush") -> "梳子"
+    label.containsAny("hairdryer", "hair dryer") -> "吹風機"
+    label.containsAny("fan") -> "電風扇"
+    label.containsAny("iron") -> "熨斗"
+    label.containsAny("pen", "pencil", "ballpoint") -> "筆"
+    label.containsAny("scissors") -> "剪刀"
+    label.containsAny("card", "credit card", "id card", "bank card") -> "卡片"
+    label.containsAny("coin", "money", "currency") -> "硬幣"
+    label.containsAny("calculator") -> "計算機"
+    label.containsAny("bottle", "water bottle") -> "水瓶"
+    label.containsAny("mug", "cup") -> "杯子"
+    else -> null
+}
+

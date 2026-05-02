@@ -1,6 +1,6 @@
 # LostFound AI — 智慧室內遺失物定位系統
 
-An Android app that helps users find lost items inside their home using a customizable digital twin room map and AI-powered prediction.
+An Android app that helps users find lost items inside their home using a customizable 2D room map, AI-powered location prediction, and Gemini Vision object recognition.
 
 > 期末專案 — 01157110 曾宇晨、01157135 梁祐嘉、01157151 廖崇劭
 
@@ -18,12 +18,25 @@ An Android app that helps users find lost items inside their home using a custom
 ### 📦 Item Management
 - Add items with name, category (8 types), and size
 - Pin an item's exact location directly on the map
-- Browse and edit your item history
+- Browse and edit your item history with photo thumbnails
 - Delete or update items at any time
 
-### 🤖 AI Prediction
+### 📷 AI Photo Recognition (Gemini Vision)
+- Tap "拍照" when adding an item to capture a photo
+- Gemini 2.5 Flash analyzes the image and automatically fills in:
+  - **Item name** — e.g. 手機、鑰匙、錢包
+  - **Category** — matched to one of the 8 predefined types
+- Photo is saved and shown as a thumbnail in the item history
+
+### 🏠 Furniture Drill-Down
+- Tap any furniture tile in normal mode to open a detail sheet
+- See all items stored in or near that furniture at a glance
+- Add a new item directly linked to a specific furniture piece
+- Item count badge on each furniture tile shows how many items are stored there
+
+### 🤖 AI Location Prediction
 - Tap any item in the history to trigger AI prediction
-- The engine scores every position on the map based on:
+- The heuristic engine scores every position on the map based on:
   - **Item size** — small items scored higher near furniture edges
   - **Category affinity** — bathroom items near the sink, electronics near the desk
   - **Walk path proximity** — positions near your recorded walking path score higher
@@ -49,7 +62,8 @@ An Android app that helps users find lost items inside their home using a custom
 | UI | Jetpack Compose + Material 3 |
 | Architecture | MVVM (ViewModel + StateFlow) |
 | Storage | SharedPreferences + Gson |
-| AI | Heuristic scoring engine (rule-based) |
+| AI — Object Recognition | Gemini 2.5 Flash (Google Generative AI) |
+| AI — Location Prediction | Heuristic scoring engine (rule-based) |
 | Navigation | Jetpack Navigation Compose |
 
 ---
@@ -60,12 +74,23 @@ An Android app that helps users find lost items inside their home using a custom
 - Android Studio Meerkat or later
 - Android SDK 36.1
 - Min SDK: API 24 (Android 7.0)
+- A free Gemini API key from [aistudio.google.com](https://aistudio.google.com/app/apikey)
 
-### Run locally
+### Setup
+
 ```bash
 git clone https://github.com/LostFound-AI/lost-found-ai-android.git
 ```
-Open in Android Studio → wait for Gradle sync → hit **Run ▶**
+
+Open in Android Studio and add your Gemini API key to `local.properties`:
+
+```
+geminiApiKey=YOUR_API_KEY_HERE
+```
+
+Then hit **Run ▶**
+
+> `local.properties` is gitignored — your API key is never committed to version control.
 
 ---
 
@@ -75,11 +100,12 @@ Open in Android Studio → wait for Gradle sync → hit **Run ▶**
 Home Screen
 └── Select / create a room
     └── Map Screen
-        ├── Edit mode — drag furniture onto the map
-        ├── 新增物品 — log where an item is (or let AI predict)
+        ├── Edit mode — drag furniture onto the map, set room boundary
+        ├── Tap furniture (normal mode) — view/add items stored there
+        ├── 新增物品 — take a photo for AI recognition, or fill in manually
         └── 尋找 — find a lost item
-            ├── Manual location → blue dot on map
-            └── AI prediction  → red dots on map
+            ├── Has saved location → green dot on map
+            └── No location → AI predicts top 3 spots (red dots)
 ```
 
 ---
