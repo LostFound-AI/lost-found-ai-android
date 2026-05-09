@@ -48,10 +48,13 @@ fun Toolbar(
         ) {
             items(items) { type ->
                 var globalPos by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                var showName by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
                 Box(
                     modifier = Modifier
                         .size(60.dp)
+                        .background(Color.White)
+                        .clickable { showName = !showName }
                         .onGloballyPositioned { coords: androidx.compose.ui.layout.LayoutCoordinates ->
                             globalPos = coords.positionInRoot()
                         }
@@ -71,7 +74,7 @@ fun Toolbar(
                 ) {
                     com.example.lostfoundai.ui.screens.MapObjectVisuals(
                         type = type,
-                        isBed = type == MapObjectType.BED,
+                        showName = showName,
                         modifier = Modifier.fillMaxSize()
                     )
                 }

@@ -47,7 +47,7 @@ class PredictionEngine {
                     
                     // Rule A: Gravity & Gap for small items within 30px
                     if ((item.size == ItemSize.VERY_SMALL || item.size == ItemSize.SMALL) &&
-                        (obj.type == MapObjectType.BED || obj.type == MapObjectType.SOFA || obj.type == MapObjectType.DESK)) {
+                        (obj.type == MapObjectType.BED || obj.type == MapObjectType.DOUBLE_SOFA || obj.type == MapObjectType.TABLE_S)) {
                         if (dist < 80f) {
                             wGravity = 0.5f // increased if near furniture
                         }
@@ -57,10 +57,10 @@ class PredictionEngine {
                     if (item.category == ItemCategory.BATHROOM && obj.type == MapObjectType.BATHROOM_SINK && dist < 100f) {
                         wLocation += 0.5f
                     }
-                    if (item.category == ItemCategory.ACCESSORY && (obj.type == MapObjectType.BED || obj.type == MapObjectType.CABINET) && dist < 100f) {
+                    if (item.category == ItemCategory.ACCESSORY && (obj.type == MapObjectType.BED || obj.type == MapObjectType.HIGH_CABINET_S) && dist < 100f) {
                         wLocation += 0.5f
                     }
-                    if (item.category == ItemCategory.ELECTRONICS && (obj.type == MapObjectType.BED || obj.type == MapObjectType.SOFA) && dist < 50f) {
+                    if (item.category == ItemCategory.ELECTRONICS && (obj.type == MapObjectType.BED || obj.type == MapObjectType.DOUBLE_SOFA) && dist < 50f) {
                         wLocation += 0.4f
                     }
                 }

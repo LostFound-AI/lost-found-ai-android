@@ -85,11 +85,13 @@ class MapViewModel(
             val obj = currentObjects[i]
             // We consider objects already processed as "obstacles" to avoid overlapping
             val otherProcessed = movedObjects + currentObjects.drop(i + 1)
+            val objWidth = obj.width * obj.scale
+            val objHeight = obj.height * obj.scale
             
-            if (!BoundaryUtils.rectInPolygon(obj.x, obj.y, obj.width, obj.height, vertices)) {
+            if (!BoundaryUtils.rectInPolygon(obj.x, obj.y, objWidth, objHeight, vertices)) {
                 // Find nearest position that is inside boundary AND doesn't overlap with already moved objects
                 val newPos = BoundaryUtils.findNearestInsidePosition(
-                    obj.x, obj.y, obj.width, obj.height, vertices,
+                    obj.x, obj.y, objWidth, objHeight, vertices,
                     avoidRects = movedObjects // Only avoid those we already placed in the new boundary
                 )
                 
@@ -160,6 +162,14 @@ class MapViewModel(
 
     fun removeMapObject(id: String) {
         repository.removeMapObject(id)
+    }
+
+    fun updateObjectScale(id: String, scale: Float) {
+        val currentObj = mapObjects.value.find { it.id == id }
+        if (currentObj != null) {
+            val updated = currentObj.copy(scale = scale)
+            repository.updateMapObject(updated)
+        }
     }
 
     fun addWalkPathPoint(x: Float, y: Float) {
