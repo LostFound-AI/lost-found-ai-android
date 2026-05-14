@@ -37,24 +37,23 @@ data class MissingItem(
 
 // Represents objects defined locally on the 2D Map (furniture, walls)
 enum class MapObjectType {
-    WALL,
-    CORNER,
     BED,
-    DESK,
-    SOFA,
-    CABINET,
+    DOUBLE_BED,
+    HIGH_CABINET_L,
     BATHROOM_SINK,
-    DOOR,
     WINDOW,
-    CHAIR,
-    TABLE,
-    BOOKSHELF,
-    WARDROBE,
-    FRIDGE,
-    TV_STAND,
-    WASHING_MACHINE,
-    SHOE_RACK,
-    TOILET
+    TOILET,
+    BATHTUB,
+    CHAIR_1,
+    CHAIR_2,
+    DOOR_LEFT,
+    DOOR_RIGHT,
+    DOUBLE_SOFA,
+    HIGH_CABINET_S,
+    REFRIGERATOR,
+    TABLE_L,
+    TABLE_S,
+    TABLE_L_SHAPE
 }
 
 data class MapObject(
@@ -62,10 +61,54 @@ data class MapObject(
     val type: MapObjectType,
     var x: Float,
     var y: Float,
-    var rotation: Float = 0f,
-    var width: Float = 100f,
-    var height: Float = 100f
+    val rotation: Float = 0f,
+    val width: Float = 100f,
+    val height: Float = 100f,
+    val scale: Float = 1.0f
 )
+
+fun MapObjectType.getDisplayName(): String {
+    return when (this) {
+        MapObjectType.BED -> "單人床"
+        MapObjectType.DOUBLE_BED -> "雙人床"
+        MapObjectType.HIGH_CABINET_L -> "高櫃(大)"
+        MapObjectType.BATHROOM_SINK -> "洗手台"
+        MapObjectType.WINDOW -> "窗戶"
+        MapObjectType.TOILET -> "馬桶"
+        MapObjectType.BATHTUB -> "浴缸"
+        MapObjectType.CHAIR_1 -> "椅子 1"
+        MapObjectType.CHAIR_2 -> "椅子 2"
+        MapObjectType.DOOR_LEFT -> "門(左開)"
+        MapObjectType.DOOR_RIGHT -> "門(右開)"
+        MapObjectType.DOUBLE_SOFA -> "雙人沙發"
+        MapObjectType.HIGH_CABINET_S -> "高櫃(小)"
+        MapObjectType.REFRIGERATOR -> "冰箱"
+        MapObjectType.TABLE_L -> "桌子(長)"
+        MapObjectType.TABLE_S -> "桌子(短)"
+        MapObjectType.TABLE_L_SHAPE -> "L型桌"
+    }
+}
+
+fun MapObjectType.getDefaultDimensions(): Pair<Float, Float> {
+    return when (this) {
+        MapObjectType.BED -> Pair(77.5f, 148.5f)
+        MapObjectType.DOUBLE_BED -> Pair(124f, 147f)
+        MapObjectType.BATHTUB -> Pair(189f, 84f)
+        MapObjectType.CHAIR_1 -> Pair(57.6f, 62f)
+        MapObjectType.CHAIR_2 -> Pair(57.6f, 62f)
+        MapObjectType.DOOR_LEFT, MapObjectType.DOOR_RIGHT -> Pair(64.5f, 64f)
+        MapObjectType.DOUBLE_SOFA -> Pair(189.5f, 91.5f)
+        MapObjectType.HIGH_CABINET_L -> Pair(186.5f, 66f)
+        MapObjectType.HIGH_CABINET_S -> Pair(125f, 64.5f)
+        MapObjectType.REFRIGERATOR -> Pair(64.5f, 65f)
+        MapObjectType.TABLE_L -> Pair(188.5f, 65f)
+        MapObjectType.TABLE_S -> Pair(126f, 64.5f)
+        MapObjectType.TABLE_L_SHAPE -> Pair(124f, 125f)
+        MapObjectType.BATHROOM_SINK -> Pair(91f, 66f)
+        MapObjectType.TOILET -> Pair(89f, 64f)
+        MapObjectType.WINDOW -> Pair(64.5f, 16f)
+    }
+}
 
 // 預設房間形狀
 enum class RoomShapePreset {
@@ -99,85 +142,44 @@ data class SavedBoundary(
 )
 
 fun MapObjectType.emoji(): String = when (this) {
-    MapObjectType.WALL -> "🧱"
-    MapObjectType.CORNER -> "📐"
-    MapObjectType.DOOR -> "🚪"
-    MapObjectType.WINDOW -> "🪟"
-    MapObjectType.BED -> "🛏"
-    MapObjectType.DESK -> "💻"
-    MapObjectType.SOFA -> "🛋"
-    MapObjectType.CABINET -> "🗄"
-    MapObjectType.BATHROOM_SINK -> "🚿"
-    MapObjectType.CHAIR -> "🪑"
-    MapObjectType.TABLE -> "🍽"
-    MapObjectType.BOOKSHELF -> "📚"
-    MapObjectType.WARDROBE -> "👔"
-    MapObjectType.FRIDGE -> "🧊"
-    MapObjectType.TV_STAND -> "📺"
-    MapObjectType.WASHING_MACHINE -> "🫧"
-    MapObjectType.SHOE_RACK -> "👟"
-    MapObjectType.TOILET -> "🚽"
+    MapObjectType.BED            -> "🛏"
+    MapObjectType.DOUBLE_BED     -> "🛏"
+    MapObjectType.HIGH_CABINET_L -> "🗄"
+    MapObjectType.HIGH_CABINET_S -> "🗄"
+    MapObjectType.BATHROOM_SINK  -> "🚿"
+    MapObjectType.WINDOW         -> "🪟"
+    MapObjectType.TOILET         -> "🚽"
+    MapObjectType.BATHTUB        -> "🛁"
+    MapObjectType.CHAIR_1        -> "🪑"
+    MapObjectType.CHAIR_2        -> "🪑"
+    MapObjectType.DOOR_LEFT      -> "🚪"
+    MapObjectType.DOOR_RIGHT     -> "🚪"
+    MapObjectType.DOUBLE_SOFA    -> "🛋"
+    MapObjectType.REFRIGERATOR   -> "🧊"
+    MapObjectType.TABLE_L        -> "🍽"
+    MapObjectType.TABLE_S        -> "🍽"
+    MapObjectType.TABLE_L_SHAPE  -> "🍽"
 }
 
 fun MapObjectType.chineseName(): String = when (this) {
-    MapObjectType.WALL -> "牆壁"
-    MapObjectType.CORNER -> "轉角"
-    MapObjectType.DOOR -> "門"
-    MapObjectType.WINDOW -> "窗戶"
-    MapObjectType.BED -> "床"
-    MapObjectType.DESK -> "書桌"
-    MapObjectType.SOFA -> "沙發"
-    MapObjectType.CABINET -> "櫃子"
-    MapObjectType.BATHROOM_SINK -> "洗手台"
-    MapObjectType.CHAIR -> "椅子"
-    MapObjectType.TABLE -> "桌子"
-    MapObjectType.BOOKSHELF -> "書架"
-    MapObjectType.WARDROBE -> "衣櫃"
-    MapObjectType.FRIDGE -> "冰箱"
-    MapObjectType.TV_STAND -> "電視櫃"
-    MapObjectType.WASHING_MACHINE -> "洗衣機"
-    MapObjectType.SHOE_RACK -> "鞋架"
-    MapObjectType.TOILET -> "馬桶"
+    MapObjectType.BED            -> "單人床"
+    MapObjectType.DOUBLE_BED     -> "雙人床"
+    MapObjectType.HIGH_CABINET_L -> "高櫃(大)"
+    MapObjectType.HIGH_CABINET_S -> "高櫃(小)"
+    MapObjectType.BATHROOM_SINK  -> "洗手台"
+    MapObjectType.WINDOW         -> "窗戶"
+    MapObjectType.TOILET         -> "馬桶"
+    MapObjectType.BATHTUB        -> "浴缸"
+    MapObjectType.CHAIR_1        -> "椅子 1"
+    MapObjectType.CHAIR_2        -> "椅子 2"
+    MapObjectType.DOOR_LEFT      -> "門(左開)"
+    MapObjectType.DOOR_RIGHT     -> "門(右開)"
+    MapObjectType.DOUBLE_SOFA    -> "雙人沙發"
+    MapObjectType.REFRIGERATOR   -> "冰箱"
+    MapObjectType.TABLE_L        -> "桌子(長)"
+    MapObjectType.TABLE_S        -> "桌子(短)"
+    MapObjectType.TABLE_L_SHAPE  -> "L型桌"
 }
 
-fun MapObjectType.defaultWidth(): Float = when (this) {
-    MapObjectType.WALL -> 120f
-    MapObjectType.CORNER -> 20f
-    MapObjectType.DOOR -> 60f
-    MapObjectType.WINDOW -> 80f
-    MapObjectType.BED -> 150f
-    MapObjectType.DESK -> 90f
-    MapObjectType.SOFA -> 150f
-    MapObjectType.CABINET -> 80f
-    MapObjectType.BATHROOM_SINK -> 50f
-    MapObjectType.CHAIR -> 50f
-    MapObjectType.TABLE -> 100f
-    MapObjectType.BOOKSHELF -> 90f
-    MapObjectType.WARDROBE -> 100f
-    MapObjectType.FRIDGE -> 60f
-    MapObjectType.TV_STAND -> 120f
-    MapObjectType.WASHING_MACHINE -> 60f
-    MapObjectType.SHOE_RACK -> 80f
-    MapObjectType.TOILET -> 50f
-}
-
-fun MapObjectType.defaultHeight(): Float = when (this) {
-    MapObjectType.WALL -> 15f
-    MapObjectType.CORNER -> 20f
-    MapObjectType.DOOR -> 15f
-    MapObjectType.WINDOW -> 10f
-    MapObjectType.BED -> 100f
-    MapObjectType.DESK -> 60f
-    MapObjectType.SOFA -> 70f
-    MapObjectType.CABINET -> 50f
-    MapObjectType.BATHROOM_SINK -> 40f
-    MapObjectType.CHAIR -> 50f
-    MapObjectType.TABLE -> 60f
-    MapObjectType.BOOKSHELF -> 30f
-    MapObjectType.WARDROBE -> 60f
-    MapObjectType.FRIDGE -> 60f
-    MapObjectType.TV_STAND -> 40f
-    MapObjectType.WASHING_MACHINE -> 60f
-    MapObjectType.SHOE_RACK -> 30f
-    MapObjectType.TOILET -> 70f
-}
+fun MapObjectType.defaultWidth(): Float = getDefaultDimensions().first
+fun MapObjectType.defaultHeight(): Float = getDefaultDimensions().second

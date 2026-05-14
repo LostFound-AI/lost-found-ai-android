@@ -29,8 +29,10 @@ class PredictionEngine {
                 // Skip positions occupied by solid large furniture
                 val isBlockedByFurniture = mapObjects.any { obj ->
                     val solidTypes = setOf(
-                        MapObjectType.BED, MapObjectType.WARDROBE, MapObjectType.SOFA,
-                        MapObjectType.FRIDGE, MapObjectType.WASHING_MACHINE, MapObjectType.TABLE
+                        MapObjectType.BED, MapObjectType.DOUBLE_BED,
+                        MapObjectType.DOUBLE_SOFA,
+                        MapObjectType.REFRIGERATOR,
+                        MapObjectType.TABLE_L, MapObjectType.TABLE_S, MapObjectType.TABLE_L_SHAPE
                     )
                     obj.type in solidTypes &&
                         xf >= obj.x && xf <= obj.x + obj.width &&
@@ -41,9 +43,9 @@ class PredictionEngine {
                 var pBase = 1.0f
                 val wSize = when (item.size) {
                     ItemSize.VERY_SMALL -> 0.5f
-                    ItemSize.SMALL -> 0.3f
-                    ItemSize.MEDIUM -> 0.1f
-                    ItemSize.LARGE -> 0.0f
+                    ItemSize.SMALL      -> 0.3f
+                    ItemSize.MEDIUM     -> 0.1f
+                    ItemSize.LARGE      -> 0.0f
                 }
                 var wPath = 0.0f
                 var wLocation = 0.0f
@@ -62,8 +64,12 @@ class PredictionEngine {
 
                     // Rule A: Gravity — small items fall near furniture edges (within 30dp)
                     if ((item.size == ItemSize.VERY_SMALL || item.size == ItemSize.SMALL) &&
-                        obj.type in setOf(MapObjectType.BED, MapObjectType.SOFA, MapObjectType.DESK,
-                            MapObjectType.CABINET, MapObjectType.TABLE)) {
+                        obj.type in setOf(
+                            MapObjectType.BED, MapObjectType.DOUBLE_BED,
+                            MapObjectType.DOUBLE_SOFA,
+                            MapObjectType.TABLE_L, MapObjectType.TABLE_S, MapObjectType.TABLE_L_SHAPE
+                        )
+                    ) {
                         if (dist < 30f) wGravity = maxOf(wGravity, 0.5f)
                     }
 
@@ -72,13 +78,32 @@ class PredictionEngine {
                         ItemCategory.BATHROOM ->
                             if (obj.type == MapObjectType.BATHROOM_SINK && dist < 80f) wLocation += 0.5f
                         ItemCategory.ACCESSORY ->
-                            if (obj.type in setOf(MapObjectType.BED, MapObjectType.CABINET, MapObjectType.DESK) && dist < 80f) wLocation += 0.4f
+                            if (obj.type in setOf(
+                                    MapObjectType.BED, MapObjectType.DOUBLE_BED,
+                                    MapObjectType.HIGH_CABINET_L, MapObjectType.HIGH_CABINET_S
+                                ) && dist < 80f
+                            ) wLocation += 0.4f
                         ItemCategory.ELECTRONICS ->
-                            if (obj.type in setOf(MapObjectType.DESK, MapObjectType.TV_STAND, MapObjectType.BED) && dist < 80f) wLocation += 0.4f
+                            if (obj.type in setOf(
+                                    MapObjectType.TABLE_L, MapObjectType.TABLE_S,
+                                    MapObjectType.TABLE_L_SHAPE,
+                                    MapObjectType.BED, MapObjectType.DOUBLE_BED
+                                ) && dist < 80f
+                            ) wLocation += 0.4f
                         ItemCategory.CLOTHING ->
-                            if (obj.type in setOf(MapObjectType.WARDROBE, MapObjectType.CHAIR) && dist < 80f) wLocation += 0.4f
+                            if (obj.type in setOf(
+                                    MapObjectType.HIGH_CABINET_L, MapObjectType.HIGH_CABINET_S,
+                                    MapObjectType.CHAIR_1, MapObjectType.CHAIR_2
+                                ) && dist < 80f
+                            ) wLocation += 0.4f
                         ItemCategory.BELONGINGS ->
-                            if (obj.type in setOf(MapObjectType.DESK, MapObjectType.CABINET, MapObjectType.CHAIR) && dist < 80f) wLocation += 0.3f
+                            if (obj.type in setOf(
+                                    MapObjectType.TABLE_L, MapObjectType.TABLE_S,
+                                    MapObjectType.TABLE_L_SHAPE,
+                                    MapObjectType.HIGH_CABINET_L, MapObjectType.HIGH_CABINET_S,
+                                    MapObjectType.CHAIR_1, MapObjectType.CHAIR_2
+                                ) && dist < 80f
+                            ) wLocation += 0.3f
                         else -> {}
                     }
                 }

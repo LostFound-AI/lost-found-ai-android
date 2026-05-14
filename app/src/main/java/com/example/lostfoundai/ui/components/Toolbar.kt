@@ -26,7 +26,6 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.PointerInputChange
 import com.example.lostfoundai.data.MapObjectType
 import com.example.lostfoundai.data.chineseName
-import com.example.lostfoundai.data.emoji
 import com.example.lostfoundai.ui.screens.MapObjectVisuals
 import com.example.lostfoundai.ui.theme.OnSurfaceVariantColor
 import com.example.lostfoundai.ui.theme.PrimaryIndigo
@@ -95,7 +94,6 @@ fun Toolbar(
                     ) {
                         MapObjectVisuals(
                             type = type,
-                            isBed = type == MapObjectType.BED,
                             modifier = Modifier.fillMaxSize()
                         )
                     }

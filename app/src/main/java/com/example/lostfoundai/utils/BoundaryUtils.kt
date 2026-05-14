@@ -85,8 +85,10 @@ object BoundaryUtils {
         fun isValid(px: Float, py: Float): Boolean {
             if (!rectInPolygon(px, py, w, h, vertices)) return false
             return avoidRects.none { other ->
-                px < other.x + other.width && px + w > other.x &&
-                py < other.y + other.height && py + h > other.y
+                val otherW = other.width * other.scale
+                val otherH = other.height * other.scale
+                px < other.x + otherW && px + w > other.x &&
+                py < other.y + otherH && py + h > other.y
             }
         }
 
