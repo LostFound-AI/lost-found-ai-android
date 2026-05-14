@@ -40,7 +40,9 @@ class SearchViewModel(
         weight: String,
         location: String,
         manualX: Float? = null,
-        manualY: Float? = null
+        manualY: Float? = null,
+        linkedFurnitureId: String? = null,
+        photoPath: String? = null
     ): String {
         val newItem = MissingItem(
             name = name,
@@ -50,7 +52,9 @@ class SearchViewModel(
             defaultWeightLevel = weight,
             lastKnownLocationDesc = location,
             manualX = manualX,
-            manualY = manualY
+            manualY = manualY,
+            linkedFurnitureId = linkedFurnitureId,
+            photoPath = photoPath
         )
         repository.addItem(newItem)
         return newItem.id

@@ -1,6 +1,10 @@
 package com.example.lostfoundai.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -9,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
@@ -16,18 +21,27 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
@@ -38,24 +52,39 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.lostfoundai.R
+import com.example.lostfoundai.ai.GeminiConfig
 import com.example.lostfoundai.data.MapObject
 import com.example.lostfoundai.data.MapObjectType
+import com.example.lostfoundai.data.MissingItem
 import com.example.lostfoundai.data.PointF
 import com.example.lostfoundai.data.RoomBoundary
 import com.example.lostfoundai.data.RoomShapePreset
 import com.example.lostfoundai.data.SavedBoundary
+import com.example.lostfoundai.data.chineseName
+import com.example.lostfoundai.data.defaultHeight
+import com.example.lostfoundai.data.defaultWidth
+import com.example.lostfoundai.data.emoji
 import com.example.lostfoundai.data.getDefaultDimensions
 import com.example.lostfoundai.ui.components.Toolbar
+import com.example.lostfoundai.ui.theme.ErrorRed
+import com.example.lostfoundai.ui.theme.MapBackground
+import com.example.lostfoundai.ui.theme.OnSurfaceVariantColor
+import com.example.lostfoundai.ui.theme.PrimaryIndigo
+import com.example.lostfoundai.ui.theme.SurfaceColor
+import com.example.lostfoundai.ui.theme.WarnYellow
 import com.example.lostfoundai.utils.BoundaryUtils
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.content
 import kotlinx.coroutines.launch
-import androidx.compose.foundation.gestures.detectDragGestures
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -70,8 +99,11 @@ fun MapScreen(
     val roomBoundary by mapViewModel.roomBoundary.collectAsState()
     val savedBoundaries by mapViewModel.savedBoundaries.collectAsState()
     val gridEnabled by mapViewModel.gridEnabled.collectAsState()
+    val walkPath by mapViewModel.walkPath.collectAsState()
+    val isRecordingWalkPath by mapViewModel.isRecordingWalkPath.collectAsState()
 
     var isEditing by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(true) }
     var showSearchSheet by remember { mutableStateOf(false) }
     var showBoundarySheet by remember { mutableStateOf(false) }
     var isDrawingBoundary by remember { mutableStateOf(false) }
@@ -154,6 +186,61 @@ fun MapScreen(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
 
+    // Furniture drill-down state
+    var selectedFurniture by remember { mutableStateOf<MapObject?>(null) }
+    var showFurnitureSheet by remember { mutableStateOf(false) }
+
+    // Gemini Vision / photo capture state
+    var preLinkFurnitureId by remember { mutableStateOf<String?>(null) }
+    var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
+    var isAnalyzingPhoto by remember { mutableStateOf(false) }
+    var detectedChips by remember { mutableStateOf<List<String>>(emptyList()) }
+    val context = LocalContext.current
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        bitmap?.let { bmp ->
+            val file = java.io.File(context.filesDir, "item_${System.currentTimeMillis()}.jpg")
+            java.io.FileOutputStream(file).use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            capturedPhotoPath = file.absolutePath
+            isAnalyzingPhoto = true
+            detectedChips = emptyList()
+            coroutineScope.launch {
+                try {
+                    val model = GenerativeModel(
+                        modelName = "gemini-2.5-flash",
+                        apiKey = GeminiConfig.API_KEY
+                    )
+                    val response = model.generateContent(
+                        content {
+                            image(bmp)
+                            text(
+                                "請辨識圖片中的主要物品名稱與類別，以JSON格式回應，格式如下：\n" +
+                                "{\"name\":\"物品名稱，用繁體中文2-5個字\",\"category\":\"類別\"}\n" +
+                                "category 必須是以下其中一個：飾品、隨身物品、電子產品、紙本、衛浴用品、家電配件、衣物"
+                            )
+                        }
+                    )
+                    val raw = response.text ?: return@launch
+                    val jsonStr = Regex("""\{[^}]+\}""").find(raw)?.value ?: return@launch
+                    val json = org.json.JSONObject(jsonStr)
+                    val detectedName = json.optString("name", "")
+                    val detectedCat = json.optString("category", "其他")
+                    isAnalyzingPhoto = false
+                    if (detectedName.isNotEmpty()) {
+                        detectedChips = listOf(detectedName)
+                        if (itemName.isEmpty()) itemName = detectedName
+                    }
+                    if (detectedCat in categories) selectedCategory = detectedCat
+                } catch (_: Exception) {
+                    isAnalyzingPhoto = false
+                }
+            }
+        }
+    }
+
     ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
@@ -177,6 +264,25 @@ fun MapScreen(
                         )
                     }
                     HorizontalDivider()
+                    Row(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("記錄行走路線")
+                        Switch(
+                                checked = isRecordingWalkPath,
+                                onCheckedChange = { mapViewModel.toggleWalkPathRecording() }
+                        )
+                    }
+                    if (walkPath.isNotEmpty()) {
+                        TextButton(
+                                onClick = { mapViewModel.clearWalkPath() },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                        ) {
+                            Text("清除路線 (${walkPath.size} 個點)")
+                        }
+                    }
                     TextButton(
                             onClick = { showClearRoomDialog = true },
                             modifier =
@@ -219,7 +325,7 @@ fun MapScreen(
                             }
             ) {
                 // Main Map Area (Full Size)
-                Box(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F5))) {
+                Box(modifier = Modifier.fillMaxSize().background(MapBackground)) {
                     MapCanvas(
                             onDrawingVertexMove = { idx, newPos ->
                                 val verts = drawingVertices.toMutableList()
@@ -234,6 +340,8 @@ fun MapScreen(
                             },
                             mapObjects = mapObjects,
                             predictedSpots = predictedSpots,
+                            storedItems = searchItems,
+                            walkPath = walkPath,
                             isEditing = isEditing,
                             mapScale = mapScale,
                             onScaleChange = { mapScale = it },
@@ -244,30 +352,36 @@ fun MapScreen(
                             isDrawingBoundary = isDrawingBoundary,
                             drawingVertices = drawingVertices,
                             isSpecifyingLocation = isSpecifyingLocation,
+                            isRecordingWalkPath = isRecordingWalkPath,
                             specifiedLocation = specifiedLocation,
                             onCanvasTap = { tapOffsetDp ->
-                                if (isDrawingBoundary) {
-                                    if (drawingVertices.isNotEmpty()) {
-                                        val lastPoint = drawingVertices.last()
-                                        val dx = kotlin.math.abs(tapOffsetDp.x - lastPoint.x)
-                                        val dy = kotlin.math.abs(tapOffsetDp.y - lastPoint.y)
-                                        val snappedPoint = if (dx > dy) {
-                                            PointF(tapOffsetDp.x, lastPoint.y)
+                                when {
+                                    isDrawingBoundary -> {
+                                        if (drawingVertices.isNotEmpty()) {
+                                            val lastPoint = drawingVertices.last()
+                                            val dx = kotlin.math.abs(tapOffsetDp.x - lastPoint.x)
+                                            val dy = kotlin.math.abs(tapOffsetDp.y - lastPoint.y)
+                                            val snappedPoint = if (dx > dy) {
+                                                PointF(tapOffsetDp.x, lastPoint.y)
+                                            } else {
+                                                PointF(lastPoint.x, tapOffsetDp.y)
+                                            }
+                                            drawingVertices = drawingVertices + snappedPoint
                                         } else {
-                                            PointF(lastPoint.x, tapOffsetDp.y)
+                                            drawingVertices = drawingVertices + tapOffsetDp
                                         }
-                                        drawingVertices = drawingVertices + snappedPoint
-                                    } else {
-                                        drawingVertices = drawingVertices + tapOffsetDp
                                     }
-                                } else if (isSpecifyingLocation) {
-                                    specifiedLocation = tapOffsetDp
-                                    isSpecifyingLocation = false
-                                    showSearchSheet = true
-                                    // Ensure we are in form view
-                                    // showHistory is already false when we enter this state, but we
-                                    // ensure it
+                                    isSpecifyingLocation -> {
+                                        specifiedLocation = tapOffsetDp
+                                        isSpecifyingLocation = false
+                                        showSearchSheet = true
+                                    }
+                                    isRecordingWalkPath -> mapViewModel.addWalkPathPoint(tapOffsetDp.x, tapOffsetDp.y)
                                 }
+                            },
+                            onFurnitureTap = { obj ->
+                                selectedFurniture = obj
+                                showFurnitureSheet = true
                             },
                             onObjectMove = { id, dx, dy ->
                                 val obj = mapObjects.find { it.id == id }
@@ -447,120 +561,217 @@ fun MapScreen(
 
                 // Buttons Overlay
                 if (isDrawingBoundary) {
-                    // Drawing mode controls
-                    Row(
-                            modifier =
-                                    Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    // Drawing mode controls — capsule style
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 28.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            shadowElevation = 8.dp,
+                            color = SurfaceColor
                     ) {
-                        OutlinedButton(onClick = { drawingVertices = emptyList() }) { Text("清除重畫") }
-                        Button(
-                                onClick = {
-                                    if (drawingVertices.size >= 3) {
-                                        val first = drawingVertices.first()
-                                        val last = drawingVertices.last()
-                                        var finalVertices = drawingVertices
-                                        // Auto-close orthogonally if the last point doesn't align with the first
-                                        if (first.x != last.x && first.y != last.y) {
-                                            val dx = kotlin.math.abs(first.x - last.x)
-                                            val dy = kotlin.math.abs(first.y - last.y)
-                                            val extraPoint = if (dx > dy) {
-                                                PointF(first.x, last.y)
-                                            } else {
-                                                PointF(last.x, first.y)
+                        Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { drawingVertices = emptyList() },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("清除重畫") }
+                            Button(
+                                    onClick = {
+                                        if (drawingVertices.size >= 3) {
+                                            val first = drawingVertices.first()
+                                            val last = drawingVertices.last()
+                                            var finalVertices = drawingVertices
+                                            if (first.x != last.x && first.y != last.y) {
+                                                val dx = kotlin.math.abs(first.x - last.x)
+                                                val dy = kotlin.math.abs(first.y - last.y)
+                                                val extraPoint = if (dx > dy) PointF(first.x, last.y) else PointF(last.x, first.y)
+                                                finalVertices = finalVertices + extraPoint
                                             }
-                                            finalVertices = finalVertices + extraPoint
+                                            pendingBoundaryVertices = finalVertices
+                                            showNameDialog = true
                                         }
-                                        pendingBoundaryVertices = finalVertices
-                                        showNameDialog = true
-                                    }
-                                    isDrawingBoundary = false
-                                    drawingVertices = emptyList()
-                                },
-                                enabled = drawingVertices.size >= 3
-                        ) { Text("完成繪製 (${drawingVertices.size} 個頂點)") }
+                                        isDrawingBoundary = false
+                                        drawingVertices = emptyList()
+                                    },
+                                    enabled = drawingVertices.size >= 3,
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("完成 (${drawingVertices.size} 個頂點)") }
+                        }
                     }
-                    // Cancel drawing button
-                    Button(
-                            onClick = {
-                                isDrawingBoundary = false
-                                drawingVertices = emptyList()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color.Gray),
-                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
-                    ) { Text("取消繪製") }
-                } else if (isEditing && !showBoundarySheet) {
-                    Row(
-                            modifier =
-                                    Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            color = Color(0xFF546E7A)
                     ) {
-                        OutlinedButton(onClick = { showBoundarySheet = true }) { Text("邊界") }
-                        Button(onClick = { isEditing = false }) { Text("完成") }
+                        TextButton(onClick = { isDrawingBoundary = false; drawingVertices = emptyList() }) {
+                            Text("取消繪製", color = Color.White)
+                        }
+                    }
+                } else if (isEditing && !showBoundarySheet) {
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 28.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            shadowElevation = 8.dp,
+                            color = SurfaceColor
+                    ) {
+                        Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showBoundarySheet = true },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("邊界管理") }
+                            Button(
+                                onClick = { isEditing = false },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("完成編輯") }
+                        }
                     }
                 }
 
-                // Settings button (Available in all modes except drawing)
-                if (!isDrawingBoundary) {
-                    Box(
-                            modifier =
-                                    Modifier.align(Alignment.TopStart).padding(16.dp).clickable {
-                                        coroutineScope.launch { drawerState.open() }
-                                    }
+                // Walk path recording banner
+                if (isRecordingWalkPath) {
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            color = WarnYellow,
+                            shadowElevation = 4.dp
                     ) {
-                        Image(
-                                painter = painterResource(id = R.drawable.setting),
-                                contentDescription = "Settings",
-                                modifier = Modifier.size(56.dp)
-                        )
+                        Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(Color(0xFFFF3D00), CircleShape)
+                            )
+                            Text(
+                                    "路線記錄中，點地圖新增路徑點",
+                                    color = Color(0xFF1A1C2E),
+                                    style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+
+                // Map legend (bottom-right, normal view only)
+                if (!isDrawingBoundary && !isEditing &&
+                        (predictedSpots.isNotEmpty() || walkPath.isNotEmpty() || searchItems.any { it.manualX != null })) {
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 12.dp, bottom = 90.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                            color = SurfaceColor.copy(alpha = 0.92f),
+                            shadowElevation = 4.dp
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (walkPath.isNotEmpty()) LegendRow(Color(0xFFFFD600), "行走路線")
+                            if (searchItems.any { it.manualX != null }) LegendRow(Color(0xFF4CAF50), "物品位置")
+                            if (predictedSpots.isNotEmpty()) LegendRow(Color(0xFFE53935), "AI 預測")
+                        }
+                    }
+                }
+
+                // Settings button (Material Icon FAB)
+                if (!isDrawingBoundary) {
+                    Surface(
+                            onClick = { coroutineScope.launch { drawerState.open() } },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(16.dp)
+                                .size(44.dp)
+                                .shadow(4.dp, CircleShape),
+                            shape = CircleShape,
+                            color = SurfaceColor
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                    Icons.Filled.Settings,
+                                    contentDescription = "Settings",
+                                    tint = PrimaryIndigo,
+                                    modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
 
                 if (!isDrawingBoundary && !isEditing) {
-                    // Bottom center search
-                    Row(
-                            modifier =
-                                    Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    // Bottom capsule: clear predictions | 新增物品 | 尋找
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 28.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            shadowElevation = 8.dp,
+                            color = SurfaceColor
                     ) {
-                        Button(onClick = { showSearchSheet = true }) { Text("尋找") }
-                        if (predictedSpots.isNotEmpty() || specifiedLocation != null) {
-                            IconButton(
-                                    onClick = {
-                                        mapViewModel.clearPredictedSpots()
-                                        specifiedLocation = null
-                                    },
-                                    modifier =
-                                            Modifier.background(
-                                                            Color.Gray.copy(alpha = 0.8f),
-                                                            shape =
-                                                                    androidx.compose.foundation
-                                                                            .shape.CircleShape
-                                                    )
-                                                    .size(40.dp)
-                            ) {
-                                Text(
-                                        "X",
-                                        color = Color.Black,
-                                        style = MaterialTheme.typography.titleMedium
-                                )
+                        Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (predictedSpots.isNotEmpty() || specifiedLocation != null) {
+                                IconButton(
+                                        onClick = {
+                                            mapViewModel.clearPredictedSpots()
+                                            specifiedLocation = null
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Filled.Close, contentDescription = "清除預測",
+                                            tint = Color.Gray, modifier = Modifier.size(18.dp))
+                                }
                             }
+                            Button(
+                                    onClick = {
+                                        showHistory = false
+                                        showSearchSheet = true
+                                    },
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo)
+                            ) { Text("新增物品", fontSize = 14.sp) }
+                            FilledTonalButton(
+                                    onClick = {
+                                        showHistory = true
+                                        showSearchSheet = true
+                                    },
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("尋找", fontSize = 14.sp) }
                         }
                     }
 
-                    // Top right edit icon
-                    Box(
-                            modifier =
-                                    Modifier.align(Alignment.TopEnd).padding(16.dp).clickable {
-                                        isEditing = true
-                                    }
+                    // Top right edit FAB
+                    Surface(
+                            onClick = { isEditing = true },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(16.dp)
+                                .size(44.dp)
+                                .shadow(4.dp, CircleShape),
+                            shape = CircleShape,
+                            color = SurfaceColor
                     ) {
-                        Image(
-                                painter = painterResource(id = R.drawable.edit),
-                                contentDescription = "Edit",
-                                modifier = Modifier.size(56.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                    Icons.Filled.Edit,
+                                    contentDescription = "Edit",
+                                    tint = PrimaryIndigo,
+                                    modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -568,7 +779,6 @@ fun MapScreen(
     }
 
     if (showSearchSheet) {
-        var showHistory by remember { mutableStateOf(false) }
 
         Box(
                 modifier =
@@ -606,10 +816,10 @@ fun MapScreen(
                                     color = Color.Black
                             )
                             IconButton(onClick = { showHistory = false }) {
-                                Image(
-                                        painter = painterResource(id = R.drawable.return_back),
+                                Icon(
+                                        Icons.AutoMirrored.Filled.ArrowBack,
                                         contentDescription = "返回表單",
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier.size(24.dp)
                                 )
                             }
                         }
@@ -664,6 +874,34 @@ fun MapScreen(
                                                             MaterialTheme.colorScheme
                                                                     .onSurfaceVariant
                                             )
+                                            // Linked furniture badge
+                                            if (item.linkedFurnitureId != null) {
+                                                val linkedObj = mapObjects.find { it.id == item.linkedFurnitureId }
+                                                if (linkedObj != null) {
+                                                    Text(
+                                                            text = "${linkedObj.type.emoji()} ${linkedObj.type.chineseName()}",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = Color(0xFF4CAF50)
+                                                    )
+                                                }
+                                            }
+                                            // Photo thumbnail
+                                            if (item.photoPath != null) {
+                                                val photoBmp = remember(item.photoPath) {
+                                                    BitmapFactory.decodeFile(item.photoPath)
+                                                }
+                                                photoBmp?.let { bmp ->
+                                                    Spacer(Modifier.height(4.dp))
+                                                    androidx.compose.foundation.Image(
+                                                            bitmap = bmp.asImageBitmap(),
+                                                            contentDescription = null,
+                                                            modifier = Modifier
+                                                                .size(40.dp)
+                                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp)),
+                                                            contentScale = ContentScale.Crop
+                                                    )
+                                                }
+                                            }
                                         }
                                         Row {
                                             IconButton(
@@ -756,16 +994,47 @@ fun MapScreen(
                             Button(
                                     onClick = {
                                         showHistory = true
-                                        editingItem =
-                                                null // reset edit state when returning to history
+                                        editingItem = null
                                         itemName = ""
                                         specifiedLocation = null
+                                        capturedPhotoPath = null
+                                        detectedChips = emptyList()
+                                        preLinkFurnitureId = null
                                     },
                                     modifier = Modifier.fillMaxWidth(0.5f)
                             ) { Text("查詢紀錄", color = Color.White) }
                         }
 
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Pre-linked furniture card
+                        if (preLinkFurnitureId != null) {
+                            val linkedObj = mapObjects.find { it.id == preLinkFurnitureId }
+                            if (linkedObj != null) {
+                                Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
+                                ) {
+                                    Row(
+                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                                "${linkedObj.type.emoji()} 關聯至${linkedObj.type.chineseName()}",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = Color(0xFF2E7D32)
+                                        )
+                                        TextButton(onClick = { preLinkFurnitureId = null }) {
+                                            Text("移除", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         OutlinedTextField(
                                 value = itemName,
@@ -797,6 +1066,60 @@ fun MapScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
+                        // Camera + AI suggestions
+                        Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedButton(
+                                    onClick = { cameraLauncher.launch(null) },
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+                            ) { Text("📷 拍照辨識") }
+
+                            if (capturedPhotoPath != null) {
+                                val photoBmp = remember(capturedPhotoPath) {
+                                    BitmapFactory.decodeFile(capturedPhotoPath)
+                                }
+                                photoBmp?.let { bmp ->
+                                    Image(
+                                            bitmap = bmp.asImageBitmap(),
+                                            contentDescription = "Captured photo",
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                                            contentScale = ContentScale.Crop
+                                    )
+                                }
+                            }
+
+                            if (isAnalyzingPhoto) {
+                                CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        strokeWidth = 2.dp
+                                )
+                                Text("AI 辨識中…", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            }
+                        }
+
+                        // Suggestion chips
+                        if (detectedChips.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                detectedChips.forEach { chip ->
+                                    SuggestionChip(
+                                            onClick = { itemName = chip },
+                                            label = { Text(chip) }
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
                         // Category Dropdown
                         ExposedDropdownMenuBox(
                                 expanded = categoryExpanded,
@@ -818,7 +1141,7 @@ fun MapScreen(
                                                             focusedTextColor = Color.Black,
                                                             unfocusedTextColor = Color.Black
                                                     ),
-                                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable, true).fillMaxWidth()
                             )
                             ExposedDropdownMenu(
                                     expanded = categoryExpanded,
@@ -893,7 +1216,7 @@ fun MapScreen(
                                                             focusedTextColor = Color.Black,
                                                             unfocusedTextColor = Color.Black
                                                     ),
-                                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable, true).fillMaxWidth()
                             )
                             ExposedDropdownMenu(
                                     expanded = sizeExpanded,
@@ -1037,7 +1360,9 @@ fun MapScreen(
                                                         category = cat,
                                                         size = sz,
                                                         manualX = specifiedLocation?.x,
-                                                        manualY = specifiedLocation?.y
+                                                        manualY = specifiedLocation?.y,
+                                                        linkedFurnitureId = preLinkFurnitureId ?: editingItem!!.linkedFurnitureId,
+                                                        photoPath = capturedPhotoPath ?: editingItem!!.photoPath
                                                 )
                                         )
                                     } else {
@@ -1049,12 +1374,17 @@ fun MapScreen(
                                                 weight = "Medium",
                                                 location = "地圖",
                                                 manualX = specifiedLocation?.x,
-                                                manualY = specifiedLocation?.y
+                                                manualY = specifiedLocation?.y,
+                                                linkedFurnitureId = preLinkFurnitureId,
+                                                photoPath = capturedPhotoPath
                                         )
                                     }
                                     editingItem = null
                                     specifiedLocation = null
                                     itemName = ""
+                                    capturedPhotoPath = null
+                                    detectedChips = emptyList()
+                                    preLinkFurnitureId = null
                                     showHistory = true
                                 },
                                 modifier =
@@ -1333,12 +1663,125 @@ fun MapScreen(
                 dismissButton = { TextButton(onClick = { renamingBoundary = null }) { Text("取消") } }
         )
     }
+
+    if (showFurnitureSheet && selectedFurniture != null) {
+        FurnitureDetailSheet(
+            furniture = selectedFurniture!!,
+            items = searchItems.filter { it.linkedFurnitureId == selectedFurniture!!.id },
+            onDismiss = {
+                showFurnitureSheet = false
+                selectedFurniture = null
+            },
+            onAddItem = {
+                preLinkFurnitureId = selectedFurniture!!.id
+                showFurnitureSheet = false
+                selectedFurniture = null
+                showHistory = false
+                showSearchSheet = true
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FurnitureDetailSheet(
+    furniture: MapObject,
+    items: List<MissingItem>,
+    onDismiss: () -> Unit,
+    onAddItem: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier.size(64.dp).background(Color(0xFFE8EAF6), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(furniture.type.emoji(), fontSize = 32.sp)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(furniture.type.chineseName(), style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(24.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("放置於此的物品 (${items.size})", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onAddItem) {
+                    Text("+ 新增物品")
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            
+            if (items.isEmpty()) {
+                Text("目前沒有物品關聯至此家具。", color = Color.Gray, modifier = Modifier.padding(32.dp))
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                    items(items) { item ->
+                        ListItem(
+                            headlineContent = { Text(item.name) },
+                            supportingContent = { Text(item.lastKnownLocationDesc) },
+                            leadingContent = {
+                                Box(
+                                    modifier = Modifier.size(40.dp).background(Color(0xFFF5F5F5), androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (item.photoPath != null) {
+                                        val photoBmp = remember(item.photoPath) {
+                                            BitmapFactory.decodeFile(item.photoPath)
+                                        }
+                                        photoBmp?.let { bmp ->
+                                            Image(
+                                                bitmap = bmp.asImageBitmap(),
+                                                contentDescription = null,
+                                                modifier = Modifier.fillMaxSize().clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        }
+                                    } else {
+                                        Text(furniture.type.emoji())
+                                    }
+                                }
+                            }
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+fun LegendRow(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(modifier = Modifier.size(10.dp).background(color, CircleShape))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = OnSurfaceVariantColor)
+    }
+}
+
+fun labelToChineseName(label: String): String {
+    return when (label) {
+        // Just return the string directly since Gemini now outputs Chinese
+        else -> label
+    }
 }
 
 @Composable
 fun MapCanvas(
         mapObjects: List<MapObject>,
         predictedSpots: List<Pair<Float, Float>>,
+        storedItems: List<MissingItem> = emptyList(),
+        walkPath: List<Pair<Float, Float>> = emptyList(),
         isEditing: Boolean,
         mapScale: Float,
         onScaleChange: (Float) -> Unit,
@@ -1349,8 +1792,10 @@ fun MapCanvas(
         isDrawingBoundary: Boolean,
         drawingVertices: List<PointF>,
         isSpecifyingLocation: Boolean,
+        isRecordingWalkPath: Boolean = false,
         specifiedLocation: PointF?,
         onCanvasTap: (PointF) -> Unit,
+        onFurnitureTap: (MapObject) -> Unit = {},
         onDrawingVertexMove: (Int, PointF) -> Unit,
         onObjectMove: (String, Float, Float) -> Unit,
         onObjectRotate: (String) -> Unit,
@@ -1389,25 +1834,39 @@ fun MapCanvas(
                                     currentOnOffsetChange(currentMapOffset + pan)
                                 }
                             }
-                            .pointerInput(isDrawingBoundary, isSpecifyingLocation) {
+                            .pointerInput(isDrawingBoundary, isSpecifyingLocation, isRecordingWalkPath) {
                                 detectTapGestures(
                                         onTap = { tapOffset ->
-                                            if (isDrawingBoundary || isSpecifyingLocation) {
-                                                // Convert screen tap to map virtual dp coordinates
-                                                val dens = density.toFloat()
-                                                val centerX = size.width / 2f
-                                                val centerY = size.height / 2f
-                                                val mapPxX =
-                                                        (tapOffset.x -
-                                                                currentMapOffset.x -
-                                                                centerX) / currentMapScale + centerX
-                                                val mapPxY =
-                                                        (tapOffset.y -
-                                                                currentMapOffset.y -
-                                                                centerY) / currentMapScale + centerY
-                                                val virtualX = mapPxX / dens
-                                                val virtualY = mapPxY / dens
+                                            // Convert screen tap to map virtual dp coordinates
+                                            val dens = density.toFloat()
+                                            val centerX = size.width / 2f
+                                            val centerY = size.height / 2f
+                                            val mapPxX =
+                                                    (tapOffset.x -
+                                                            currentMapOffset.x -
+                                                            centerX) / currentMapScale + centerX
+                                            val mapPxY =
+                                                    (tapOffset.y -
+                                                            currentMapOffset.y -
+                                                            centerY) / currentMapScale + centerY
+                                            val virtualX = mapPxX / dens
+                                            val virtualY = mapPxY / dens
+
+                                            if (isDrawingBoundary || isSpecifyingLocation || isRecordingWalkPath) {
                                                 onCanvasTap(PointF(virtualX, virtualY))
+                                            } else if (!isEditing) {
+                                                // Check if a furniture object was tapped
+                                                val tappedObj = mapObjects.find { obj ->
+                                                    val objW = obj.width * obj.scale
+                                                    val objH = obj.height * obj.scale
+                                                    virtualX >= obj.x && virtualX <= obj.x + objW &&
+                                                            virtualY >= obj.y && virtualY <= obj.y + objH
+                                                }
+                                                if (tappedObj != null) {
+                                                    onFurnitureTap(tappedObj)
+                                                } else {
+                                                    selectedObjectId = null
+                                                }
                                             } else {
                                                 selectedObjectId = null
                                             }
@@ -1708,20 +2167,69 @@ fun MapCanvas(
                 )
             }
 
-            // Draw Predictions and Manual Location
+            // Draw Predictions, Manual Location, Walk Path, and Stored Item Pins
             Canvas(modifier = Modifier.fillMaxSize()) {
-                predictedSpots.forEach { spot ->
+                val dens = density
+
+                // Walk path — yellow line + dots
+                if (walkPath.size >= 2) {
+                    val pathObj = Path()
+                    pathObj.moveTo(walkPath[0].first * dens, walkPath[0].second * dens)
+                    for (i in 1 until walkPath.size) {
+                        pathObj.lineTo(walkPath[i].first * dens, walkPath[i].second * dens)
+                    }
+                    drawPath(pathObj, color = Color(0xFFFFD600), style = Stroke(width = 3f * dens))
+                }
+                walkPath.forEach { pt ->
                     drawCircle(
-                            color = Color.Red.copy(alpha = 0.6f),
-                            radius = 40f,
-                            center = Offset(spot.first, spot.second)
+                            color = Color(0xFFFFD600),
+                            radius = 5f * dens,
+                            center = Offset(pt.first * dens, pt.second * dens)
                     )
                 }
+
+                // Stored items — green pins
+                storedItems.forEach { item ->
+                    if (item.manualX != null && item.manualY != null) {
+                        drawCircle(
+                                color = Color(0xFF4CAF50).copy(alpha = 0.7f),
+                                radius = 8f * dens,
+                                center = Offset(item.manualX * dens, item.manualY * dens)
+                        )
+                        drawCircle(
+                                color = Color(0xFF4CAF50),
+                                radius = 8f * dens,
+                                center = Offset(item.manualX * dens, item.manualY * dens),
+                                style = Stroke(width = 1.5f * dens)
+                        )
+                    }
+                }
+
+                // AI predictions — red pulsing circles (dp coords)
+                predictedSpots.forEach { spot ->
+                    drawCircle(
+                            color = Color(0xFFE53935).copy(alpha = 0.4f),
+                            radius = 14f * dens,
+                            center = Offset(spot.first * dens, spot.second * dens)
+                    )
+                    drawCircle(
+                            color = Color(0xFFE53935).copy(alpha = 0.7f),
+                            radius = 6f * dens,
+                            center = Offset(spot.first * dens, spot.second * dens)
+                    )
+                }
+
+                // Manual specified location — blue pin
                 specifiedLocation?.let { loc ->
                     drawCircle(
-                            color = Color.Blue.copy(alpha = 0.6f),
-                            radius = 40f,
-                            center = Offset(loc.x * density, loc.y * density)
+                            color = Color(0xFF1565C0).copy(alpha = 0.5f),
+                            radius = 12f * dens,
+                            center = Offset(loc.x * dens, loc.y * dens)
+                    )
+                    drawCircle(
+                            color = Color(0xFF1565C0),
+                            radius = 5f * dens,
+                            center = Offset(loc.x * dens, loc.y * dens)
                     )
                 }
             }

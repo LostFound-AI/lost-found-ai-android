@@ -33,7 +33,14 @@ class MapViewModel(
 
     private val _walkPath = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val walkPath: StateFlow<List<Pair<Float, Float>>> = _walkPath.asStateFlow()
-    
+
+    private val _isRecordingWalkPath = MutableStateFlow(false)
+    val isRecordingWalkPath: StateFlow<Boolean> = _isRecordingWalkPath.asStateFlow()
+
+    fun toggleWalkPathRecording() {
+        _isRecordingWalkPath.value = !_isRecordingWalkPath.value
+    }
+
     // UI states for dragging from toolbar
     var draggedObjectType: MapObjectType? = null
 

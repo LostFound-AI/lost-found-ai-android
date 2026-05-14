@@ -30,7 +30,9 @@ data class MissingItem(
     val defaultWeightLevel: String, // "High", "Medium", "Low", "Very Low"
     val lastKnownLocationDesc: String = "",
     val manualX: Float? = null,
-    val manualY: Float? = null
+    val manualY: Float? = null,
+    val linkedFurnitureId: String? = null,
+    val photoPath: String? = null
 )
 
 // Represents objects defined locally on the 2D Map (furniture, walls)
@@ -138,3 +140,46 @@ data class SavedBoundary(
     val name: String,
     val vertices: List<PointF>
 )
+
+fun MapObjectType.emoji(): String = when (this) {
+    MapObjectType.BED            -> "🛏"
+    MapObjectType.DOUBLE_BED     -> "🛏"
+    MapObjectType.HIGH_CABINET_L -> "🗄"
+    MapObjectType.HIGH_CABINET_S -> "🗄"
+    MapObjectType.BATHROOM_SINK  -> "🚿"
+    MapObjectType.WINDOW         -> "🪟"
+    MapObjectType.TOILET         -> "🚽"
+    MapObjectType.BATHTUB        -> "🛁"
+    MapObjectType.CHAIR_1        -> "🪑"
+    MapObjectType.CHAIR_2        -> "🪑"
+    MapObjectType.DOOR_LEFT      -> "🚪"
+    MapObjectType.DOOR_RIGHT     -> "🚪"
+    MapObjectType.DOUBLE_SOFA    -> "🛋"
+    MapObjectType.REFRIGERATOR   -> "🧊"
+    MapObjectType.TABLE_L        -> "🍽"
+    MapObjectType.TABLE_S        -> "🍽"
+    MapObjectType.TABLE_L_SHAPE  -> "🍽"
+}
+
+fun MapObjectType.chineseName(): String = when (this) {
+    MapObjectType.BED            -> "單人床"
+    MapObjectType.DOUBLE_BED     -> "雙人床"
+    MapObjectType.HIGH_CABINET_L -> "高櫃(大)"
+    MapObjectType.HIGH_CABINET_S -> "高櫃(小)"
+    MapObjectType.BATHROOM_SINK  -> "洗手台"
+    MapObjectType.WINDOW         -> "窗戶"
+    MapObjectType.TOILET         -> "馬桶"
+    MapObjectType.BATHTUB        -> "浴缸"
+    MapObjectType.CHAIR_1        -> "椅子 1"
+    MapObjectType.CHAIR_2        -> "椅子 2"
+    MapObjectType.DOOR_LEFT      -> "門(左開)"
+    MapObjectType.DOOR_RIGHT     -> "門(右開)"
+    MapObjectType.DOUBLE_SOFA    -> "雙人沙發"
+    MapObjectType.REFRIGERATOR   -> "冰箱"
+    MapObjectType.TABLE_L        -> "桌子(長)"
+    MapObjectType.TABLE_S        -> "桌子(短)"
+    MapObjectType.TABLE_L_SHAPE  -> "L型桌"
+}
+
+fun MapObjectType.defaultWidth(): Float = getDefaultDimensions().first
+fun MapObjectType.defaultHeight(): Float = getDefaultDimensions().second
