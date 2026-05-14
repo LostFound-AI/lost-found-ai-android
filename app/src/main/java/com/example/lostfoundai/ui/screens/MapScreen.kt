@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -2407,9 +2408,10 @@ fun MapObjectView(
                     shadowElevation = 4.dp,
                     onClick = { onDelete() }
             ) {
-                Image(
-                        painter = painterResource(id = R.drawable.delete),
+                Icon(
+                        imageVector = Icons.Default.Delete,
                         contentDescription = "Delete Object",
+                        tint = Color(0xFFE53935),
                         modifier = Modifier.fillMaxSize().padding(4.dp)
                 )
             }
