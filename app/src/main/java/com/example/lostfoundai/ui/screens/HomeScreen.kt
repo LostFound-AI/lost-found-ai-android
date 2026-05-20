@@ -18,6 +18,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import com.example.lostfoundai.ui.components.KeyboardAccessoryProvider
+import com.example.lostfoundai.ui.components.AccessoryOutlinedTextField
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -174,15 +176,17 @@ fun HomeScreen(
                     Text("新增房間", fontWeight = FontWeight.Bold)
                 },
                 text = {
-                    OutlinedTextField(
-                        value = newRoomName,
-                        onValueChange = { newRoomName = it },
-                        label = { Text("房間名稱") },
-                        placeholder = { Text("例如：臥室、客廳") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
+                    KeyboardAccessoryProvider {
+                        AccessoryOutlinedTextField(
+                            value = newRoomName,
+                            onValueChange = { newRoomName = it },
+                            label = { Text("房間名稱") },
+                            placeholder = { Text("例如：臥室、客廳") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
                 },
                 confirmButton = {
                     Button(

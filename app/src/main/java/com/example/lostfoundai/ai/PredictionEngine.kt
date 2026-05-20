@@ -5,6 +5,7 @@ import com.example.lostfoundai.data.ItemSize
 import com.example.lostfoundai.data.MapObject
 import com.example.lostfoundai.data.MapObjectType
 import com.example.lostfoundai.data.MissingItem
+import com.example.lostfoundai.data.PointF
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -15,7 +16,7 @@ class PredictionEngine {
     fun calculatePrediction(
         item: MissingItem,
         mapObjects: List<MapObject>,
-        walkPath: List<Pair<Float, Float>>,
+        walkPath: List<PointF>,
         topN: Int = 3
     ): List<Pair<Float, Float>> {
         val spots = mutableListOf<Pair<Pair<Float, Float>, Float>>()
@@ -53,7 +54,7 @@ class PredictionEngine {
 
                 // Rule B: Proximity to walk path (30dp radius)
                 for (p in walkPath) {
-                    if (distance(xf, yf, p.first, p.second) < 30f) {
+                    if (distance(xf, yf, p.x, p.y) < 30f) {
                         wPath = 0.3f
                         break
                     }

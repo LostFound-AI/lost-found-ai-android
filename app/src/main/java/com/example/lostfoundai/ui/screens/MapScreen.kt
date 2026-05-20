@@ -76,6 +76,8 @@ import com.example.lostfoundai.data.defaultWidth
 import com.example.lostfoundai.data.emoji
 import com.example.lostfoundai.data.getDefaultDimensions
 import com.example.lostfoundai.ui.components.Toolbar
+import com.example.lostfoundai.ui.components.KeyboardAccessoryProvider
+import com.example.lostfoundai.ui.components.AccessoryOutlinedTextField
 import com.example.lostfoundai.ui.theme.ErrorRed
 import com.example.lostfoundai.ui.theme.MapBackground
 import com.example.lostfoundai.ui.theme.OnSurfaceVariantColor
@@ -102,12 +104,15 @@ fun MapScreen(
     val gridEnabled by mapViewModel.gridEnabled.collectAsState()
     val walkPath by mapViewModel.walkPath.collectAsState()
     val isRecordingWalkPath by mapViewModel.isRecordingWalkPath.collectAsState()
+    val isWalkPathVisible by mapViewModel.isWalkPathVisible.collectAsState()
 
     var isEditing by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(true) }
     var showSearchSheet by remember { mutableStateOf(false) }
     var showBoundarySheet by remember { mutableStateOf(false) }
     var isDrawingBoundary by remember { mutableStateOf(false) }
+    // baselineBoundaryVertices: 進入微調模式時記下的原始邊界，作為常駐底圖參考
+    var baselineBoundaryVertices by remember { mutableStateOf<List<PointF>?>(null) }
     var drawingVertices by remember { mutableStateOf<List<PointF>>(emptyList()) }
     // Naming dialog for custom boundaries
     var showNameDialog by remember { mutableStateOf(false) }
@@ -235,8 +240,9 @@ fun MapScreen(
                         if (itemName.isEmpty()) itemName = detectedName
                     }
                     if (detectedCat in categories) selectedCategory = detectedCat
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     isAnalyzingPhoto = false
+                    android.util.Log.e("MapScreen", "Gemini analysis failed", e)
                 }
             }
         }
@@ -264,25 +270,16 @@ fun MapScreen(
                                 onCheckedChange = { mapViewModel.setGridEnabled(it) }
                         )
                     }
-                    HorizontalDivider()
                     Row(
                             modifier = Modifier.fillMaxWidth().padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("記錄行走路線")
+                        Text("顯示行走路線")
                         Switch(
-                                checked = isRecordingWalkPath,
-                                onCheckedChange = { mapViewModel.toggleWalkPathRecording() }
+                                checked = isWalkPathVisible,
+                                onCheckedChange = { mapViewModel.toggleWalkPathVisibility() }
                         )
-                    }
-                    if (walkPath.isNotEmpty()) {
-                        TextButton(
-                                onClick = { mapViewModel.clearWalkPath() },
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                        ) {
-                            Text("清除路線 (${walkPath.size} 個點)")
-                        }
                     }
                     TextButton(
                             onClick = { showClearRoomDialog = true },
@@ -339,10 +336,53 @@ fun MapScreen(
                                 }
                                 drawingVertices = verts
                             },
+                            onBoundaryVertexMove = { idx, newPos ->
+                                val verts = drawingVertices.toMutableList()
+                                val old = verts[idx]
+                                verts[idx] = newPos // 更新當前拖曳的頂點
+                                
+                                val prevIdx = (idx - 1 + verts.size) % verts.size
+                                val nextIdx = (idx + 1) % verts.size
+                                
+                                // 【推導邏輯】
+                                // 為了維持相鄰線段的「正交(Orthogonal)」特性：
+                                // 若原本「前一個點」到「當前點」是水平線 (Y座標相同)，則拖曳當前點後，前一個點必須跟著改變 Y 座標才能維持水平。
+                                // 若原本是垂直線 (X座標相同)，前一個點必須跟著改變 X 座標。
+                                if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
+                                else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
+                                
+                                // 同理應用於「下一個點」：
+                                if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
+                                else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
+                                
+                                // 【需求一】移除因頂點移動產生的共線節點
+                                drawingVertices = removeCollinearPoints(verts)
+                            },
+                            onBoundaryMidpointMove = { idx, newPos ->
+                                val verts = drawingVertices.toMutableList()
+                                val nextIdx = (idx + 1) % verts.size
+                                val p1 = verts[idx]
+                                val p2 = verts[nextIdx]
+                                val isHoriz = p1.y == p2.y
+                                
+                                // 【推導邏輯】
+                                // 拖曳中點代表整條線段的平移。
+                                // 若線段為水平 (Y座標相同)，則拖曳時只允許改變 Y 軸（上下平移）。因此我們只取 newPos.y 更新兩端點。
+                                // 若線段為垂直 (X座標相同)，則拖曳時只允許改變 X 軸（左右平移）。我們只取 newPos.x 更新兩端點。
+                                if (isHoriz) {
+                                    verts[idx] = PointF(p1.x, newPos.y)
+                                    verts[nextIdx] = PointF(p2.x, newPos.y)
+                                } else {
+                                    verts[idx] = PointF(newPos.x, p1.y)
+                                    verts[nextIdx] = PointF(newPos.x, p2.y)
+                                }
+                                // 【需求一】移除因線段平移產生的共線節點
+                                drawingVertices = removeCollinearPoints(verts)
+                            },
                             mapObjects = mapObjects,
                             predictedSpots = predictedSpots,
                             storedItems = searchItems,
-                            walkPath = walkPath,
+                            walkPath = if (isWalkPathVisible) walkPath else emptyList(),
                             isEditing = isEditing,
                             mapScale = mapScale,
                             onScaleChange = { mapScale = it },
@@ -351,6 +391,7 @@ fun MapScreen(
                             onCanvasSize = { canvasSize = it },
                             boundaryVertices = roomBoundary.vertices,
                             isDrawingBoundary = isDrawingBoundary,
+                            baselineBoundaryVertices = baselineBoundaryVertices,
                             drawingVertices = drawingVertices,
                             isSpecifyingLocation = isSpecifyingLocation,
                             isRecordingWalkPath = isRecordingWalkPath,
@@ -414,8 +455,13 @@ fun MapScreen(
                 }
 
                 // Toolbar as Overlay
-                if (isEditing) {
-                    Box(modifier = Modifier.align(Alignment.CenterEnd)) {
+                if (isEditing && !isDrawingBoundary && !isRecordingWalkPath && !showBoundarySheet) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            // 【問題三修正】從外部限制物件庫的整體高度，使其底部避開下方按鈕
+                            .padding(bottom = 100.dp)
+                    ) {
                         Toolbar(
                                 onDragStart = { type, offset ->
                                     draggingType = type
@@ -583,23 +629,54 @@ fun MapScreen(
                                     onClick = {
                                         if (drawingVertices.size >= 3) {
                                             val first = drawingVertices.first()
-                                            val last = drawingVertices.last()
-                                            var finalVertices = drawingVertices
-                                            if (first.x != last.x && first.y != last.y) {
-                                                val dx = kotlin.math.abs(first.x - last.x)
-                                                val dy = kotlin.math.abs(first.y - last.y)
-                                                val extraPoint = if (dx > dy) PointF(first.x, last.y) else PointF(last.x, first.y)
-                                                finalVertices = finalVertices + extraPoint
+                                            var finalVertices = drawingVertices.toMutableList()
+                                            val currentLast = finalVertices.last()
+                                            if (finalVertices.size >= 2) {
+                                                val secondLast = finalVertices[finalVertices.size - 2]
+                                                if (secondLast.x == currentLast.x) {
+                                                    finalVertices[finalVertices.size - 1] = PointF(currentLast.x, first.y)
+                                                } else {
+                                                    finalVertices[finalVertices.size - 1] = PointF(first.x, currentLast.y)
+                                                }
                                             }
-                                            pendingBoundaryVertices = finalVertices
-                                            showNameDialog = true
+                                            // 【需求一】移除共線多餘節點
+                                            finalVertices = removeCollinearPoints(finalVertices).toMutableList()
+
+                                            if (baselineBoundaryVertices != null) {
+                                                // ── 微調完成 ──────────────────────────────────────
+                                                val savedId = roomBoundary.savedBoundaryId
+                                                if (savedId != null) {
+                                                    // 【需求三】自訂邊界：原地更新
+                                                    mapViewModel.updateSavedBoundary(savedId, finalVertices)
+                                                    mapViewModel.setRoomBoundary(
+                                                        RoomBoundary(
+                                                            preset = RoomShapePreset.CUSTOM,
+                                                            vertices = finalVertices,
+                                                            savedBoundaryId = savedId
+                                                        )
+                                                    )
+                                                } else {
+                                                    // 【需求四】預設邊界：另存為新的自訂邊界，觸發命名對話框
+                                                    pendingBoundaryVertices = finalVertices
+                                                    showNameDialog = true
+                                                }
+                                                mapViewModel.relocateObjectsIntoBoundary(finalVertices)
+                                            } else {
+                                                // ── 全新繪製完成：一般存檔流程 ───────────────
+                                                pendingBoundaryVertices = finalVertices
+                                                showNameDialog = true
+                                            }
                                         }
                                         isDrawingBoundary = false
                                         drawingVertices = emptyList()
+                                        baselineBoundaryVertices = null
                                     },
                                     enabled = drawingVertices.size >= 3,
                                     shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
-                            ) { Text("完成 (${drawingVertices.size} 個頂點)") }
+                            ) {
+                                val label = if (baselineBoundaryVertices != null) "完成微調" else "完成 (${drawingVertices.size} 個頂點)"
+                                Text(label)
+                            }
                         }
                     }
                     Surface(
@@ -609,7 +686,11 @@ fun MapScreen(
                             shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
                             color = Color(0xFF546E7A)
                     ) {
-                        TextButton(onClick = { isDrawingBoundary = false; drawingVertices = emptyList() }) {
+                        TextButton(onClick = {
+                            isDrawingBoundary = false
+                            drawingVertices = emptyList()
+                            baselineBoundaryVertices = null  // 清除底圖
+                        }) {
                             Text("取消繪製", color = Color.White)
                         }
                     }
@@ -630,6 +711,10 @@ fun MapScreen(
                                 onClick = { showBoundarySheet = true },
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
                             ) { Text("邊界管理") }
+                            OutlinedButton(
+                                onClick = { mapViewModel.toggleWalkPathRecording() },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("路線編輯") }
                             Button(
                                 onClick = { isEditing = false },
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
@@ -659,10 +744,23 @@ fun MapScreen(
                                         .background(Color(0xFFFF3D00), CircleShape)
                             )
                             Text(
-                                    "路線記錄中，點地圖新增路徑點",
+                                    "路線編輯中 (${walkPath.size})",
                                     color = Color(0xFF1A1C2E),
                                     style = MaterialTheme.typography.labelMedium
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TextButton(
+                                onClick = { mapViewModel.clearWalkPath() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) { Text("清除路線", color = Color(0xFF1A1C2E)) }
+                            Button(
+                                onClick = { mapViewModel.toggleWalkPathRecording() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp),
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1C2E))
+                            ) { Text("完成", color = Color.White) }
                         }
                     }
                 }
@@ -799,11 +897,12 @@ fun MapScreen(
                     sheetState = sheetState,
                     containerColor = Color.White
             ) {
-                Column(
-                        modifier =
-                                Modifier.fillMaxWidth()
-                                        .padding(horizontal = 24.dp, vertical = 16.dp)
-                ) {
+                KeyboardAccessoryProvider {
+                    Column(
+                            modifier =
+                                    Modifier.fillMaxWidth()
+                                            .padding(horizontal = 24.dp, vertical = 16.dp)
+                    ) {
                     if (showHistory) {
                         // ... History View ...
                         Row(
@@ -1037,7 +1136,7 @@ fun MapScreen(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        OutlinedTextField(
+                        AccessoryOutlinedTextField(
                                 value = itemName,
                                 onValueChange = { itemName = it },
                                 label = { Text("物品名稱", color = Color(0xFF2A2A2A)) },
@@ -1126,7 +1225,7 @@ fun MapScreen(
                                 expanded = categoryExpanded,
                                 onExpandedChange = { categoryExpanded = it }
                         ) {
-                            OutlinedTextField(
+                            AccessoryOutlinedTextField(
                                     value = selectedCategory,
                                     onValueChange = {},
                                     readOnly = true,
@@ -1162,7 +1261,7 @@ fun MapScreen(
                         }
                         if (selectedCategory == "自訂") {
                             Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
+                            AccessoryOutlinedTextField(
                                     value = customCategory,
                                     onValueChange = { customCategory = it },
                                     label = { Text("請輸入自訂類別", color = Color(0xFF2A2A2A)) },
@@ -1201,7 +1300,7 @@ fun MapScreen(
                                 expanded = sizeExpanded,
                                 onExpandedChange = { sizeExpanded = it }
                         ) {
-                            OutlinedTextField(
+                            AccessoryOutlinedTextField(
                                     value = selectedSize,
                                     onValueChange = {},
                                     readOnly = true,
@@ -1237,7 +1336,7 @@ fun MapScreen(
                         }
                         if (selectedSize == "自訂") {
                             Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedTextField(
+                            AccessoryOutlinedTextField(
                                     value = customSize,
                                     onValueChange = { customSize = it },
                                     label = { Text("請輸入自訂大小", color = Color(0xFF2A2A2A)) },
@@ -1396,6 +1495,7 @@ fun MapScreen(
                     }
                 }
             }
+            }
         }
     }
 
@@ -1498,7 +1598,22 @@ fun MapScreen(
                                     .padding(horizontal = 24.dp, vertical = 16.dp)
                                     .verticalScroll(rememberScrollState())
             ) {
-                Text("選擇邊界形狀", style = MaterialTheme.typography.titleLarge, color = Color.Black)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("選擇邊界形狀", style = MaterialTheme.typography.titleLarge, color = Color.Black)
+                    Button(onClick = {
+                        showBoundarySheet = false
+                        // 進入微調模式：用 isDrawingBoundary 合併狀態，並記錄基線底圖
+                        baselineBoundaryVertices = roomBoundary.vertices
+                        drawingVertices = roomBoundary.vertices
+                        isDrawingBoundary = true
+                    }) {
+                        Text("微調目前邊界")
+                    }
+                }
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // --- Preset shapes ---
@@ -1598,7 +1713,7 @@ fun MapScreen(
                 onDismissRequest = { showNameDialog = false },
                 title = { Text("為邊界命名") },
                 text = {
-                    OutlinedTextField(
+                    AccessoryOutlinedTextField(
                             value = nameText,
                             onValueChange = { nameText = it },
                             label = { Text("邊界名稱") },
@@ -1645,7 +1760,7 @@ fun MapScreen(
                 onDismissRequest = { renamingBoundary = null },
                 title = { Text("重新命名邊界") },
                 text = {
-                    OutlinedTextField(
+                    AccessoryOutlinedTextField(
                             value = renameText,
                             onValueChange = { renameText = it },
                             label = { Text("新名稱") },
@@ -1777,12 +1892,43 @@ fun labelToChineseName(label: String): String {
     }
 }
 
+/**
+ * 【需求一】共線節點移除：
+ * 若連續三個點中，中間那個點與前後點同 X（垂直共線）或同 Y（水平共線），
+ * 表示中間點是多餘的，予以移除。重複遍歷直到沒有多餘點為止。
+ */
+fun removeCollinearPoints(vertices: List<PointF>): List<PointF> {
+    if (vertices.size <= 2) return vertices
+    var result = vertices.toMutableList()
+    var changed = true
+    while (changed) {
+        changed = false
+        val cleaned = mutableListOf<PointF>()
+        cleaned.add(result[0])
+        for (i in 1 until result.size - 1) {
+            val prev = result[i - 1]
+            val cur  = result[i]
+            val next = result[i + 1]
+            // 共線判斷：若前→當前 與 當前→後 方向相同（同軸），跳過中間點
+            val isHorizPrev = prev.y == cur.y
+            val isHorizNext = cur.y == next.y
+            val isVertPrev  = prev.x == cur.x
+            val isVertNext  = cur.x == next.x
+            val isCollinear = (isHorizPrev && isHorizNext) || (isVertPrev && isVertNext)
+            if (!isCollinear) cleaned.add(cur) else changed = true
+        }
+        cleaned.add(result.last())
+        result = cleaned
+    }
+    return result
+}
+
 @Composable
 fun MapCanvas(
         mapObjects: List<MapObject>,
         predictedSpots: List<Pair<Float, Float>>,
         storedItems: List<MissingItem> = emptyList(),
-        walkPath: List<Pair<Float, Float>> = emptyList(),
+        walkPath: List<PointF> = emptyList(),
         isEditing: Boolean,
         mapScale: Float,
         onScaleChange: (Float) -> Unit,
@@ -1791,6 +1937,7 @@ fun MapCanvas(
         onCanvasSize: (androidx.compose.ui.unit.IntSize) -> Unit,
         boundaryVertices: List<PointF>,
         isDrawingBoundary: Boolean,
+        baselineBoundaryVertices: List<PointF>? = null,
         drawingVertices: List<PointF>,
         isSpecifyingLocation: Boolean,
         isRecordingWalkPath: Boolean = false,
@@ -1798,6 +1945,8 @@ fun MapCanvas(
         onCanvasTap: (PointF) -> Unit,
         onFurnitureTap: (MapObject) -> Unit = {},
         onDrawingVertexMove: (Int, PointF) -> Unit,
+        onBoundaryVertexMove: (Int, PointF) -> Unit = { _, _ -> },
+        onBoundaryMidpointMove: (Int, PointF) -> Unit = { _, _ -> },
         onObjectMove: (String, Float, Float) -> Unit,
         onObjectRotate: (String) -> Unit,
         onDeleteObject: (String) -> Unit,
@@ -1807,6 +1956,21 @@ fun MapCanvas(
     var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
 
     var selectedObjectId by remember { mutableStateOf<String?>(null) }
+    // dragPreviewVertices: 拖曳中即時計算的預覽節點列表
+    var dragPreviewVertices by remember { mutableStateOf<List<PointF>?>(null) }
+    // isDraggingHandle: 是否正在拖曳任一控制點
+    var isDraggingHandle by remember { mutableStateOf(false) }
+
+    // 【需求二】常駐預覽：進入微調模式（有 baselineBoundaryVertices）後，
+    // 若無正在進行的拖曳，預覽邊界就跟隨 drawingVertices（即最新確認後的形狀）。
+    // 拖曳中則由手勢直接更新 dragPreviewVertices（每幀即時刷新）。
+    LaunchedEffect(isDrawingBoundary, baselineBoundaryVertices, drawingVertices) {
+        if (isDrawingBoundary && baselineBoundaryVertices != null && !isDraggingHandle) {
+            dragPreviewVertices = drawingVertices
+        } else if (!isDrawingBoundary) {
+            dragPreviewVertices = null
+        }
+    }
 
     // If edit mode ends, clear selection
     LaunchedEffect(isEditing) {
@@ -1817,6 +1981,7 @@ fun MapCanvas(
 
     val currentMapScale by rememberUpdatedState(mapScale)
     val currentMapOffset by rememberUpdatedState(mapOffset)
+    val currentDrawingVertices by rememberUpdatedState(drawingVertices)
     val currentOnScaleChange by rememberUpdatedState(onScaleChange)
     val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
 
@@ -1968,14 +2133,16 @@ fun MapCanvas(
             }
 
             // Drawing preview — show in-progress vertices and lines
-            if (isDrawingBoundary && drawingVertices.isNotEmpty()) {
+            // 【問題一修正】即時預覽：使用 dragPreviewVertices (拖曳中) 或 drawingVertices (平時)
+            val activePreviewVertices = dragPreviewVertices ?: drawingVertices
+            if (isDrawingBoundary && activePreviewVertices.isNotEmpty()) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val dens = density
                     // Draw lines
                     val path = Path()
-                    path.moveTo(drawingVertices[0].x * dens, drawingVertices[0].y * dens)
-                    for (i in 1 until drawingVertices.size) {
-                        path.lineTo(drawingVertices[i].x * dens, drawingVertices[i].y * dens)
+                    path.moveTo(activePreviewVertices[0].x * dens, activePreviewVertices[0].y * dens)
+                    for (i in 1 until activePreviewVertices.size) {
+                        path.lineTo(activePreviewVertices[i].x * dens, activePreviewVertices[i].y * dens)
                     }
                     drawPath(
                             path,
@@ -1983,18 +2150,18 @@ fun MapCanvas(
                             style = Stroke(width = 2f * dens)
                     )
                     // Draw dashed close line preview
-                    if (drawingVertices.size >= 3) {
+                    if (activePreviewVertices.size >= 3) {
                         drawLine(
                                 color = Color.Red.copy(alpha = 0.4f),
                                 start =
                                         Offset(
-                                                drawingVertices.last().x * dens,
-                                                drawingVertices.last().y * dens
+                                                activePreviewVertices.last().x * dens,
+                                                activePreviewVertices.last().y * dens
                                         ),
                                 end =
                                         Offset(
-                                                drawingVertices[0].x * dens,
-                                                drawingVertices[0].y * dens
+                                                activePreviewVertices[0].x * dens,
+                                                activePreviewVertices[0].y * dens
                                         ),
                                 strokeWidth = 1.5f * dens
                         )
@@ -2002,58 +2169,198 @@ fun MapCanvas(
                 }
             }
 
-            // Drawing mode: draggable vertex handles on top of the canvas
+            // 常駐底圖：只要進入繪製模式且有基線，就將「修改前原始形狀」用灰色虛線常駐顯示
+            if (isDrawingBoundary && baselineBoundaryVertices != null) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val dens = density
+                    val baseline = baselineBoundaryVertices!!
+                    if (baseline.size >= 2) {
+                        val path = Path()
+                        path.moveTo(baseline[0].x * dens, baseline[0].y * dens)
+                        for (i in 1 until baseline.size) {
+                            path.lineTo(baseline[i].x * dens, baseline[i].y * dens)
+                        }
+                        path.close()
+                        drawPath(
+                                path,
+                                color = Color.Gray.copy(alpha = 0.35f),
+                                style = Stroke(
+                                        width = 2f * dens,
+                                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(20f, 20f), 0f)
+                                )
+                        )
+                    }
+                }
+            }
+
+            // Boundary Drawing mode: draggable handles on top of the canvas
             if (isDrawingBoundary) {
                 val dens = density
-                drawingVertices.forEachIndexed { idx, v ->
+                val targetVertices = dragPreviewVertices ?: drawingVertices
+                
+                targetVertices.forEachIndexed { idx, v ->
                     val handlePxX = v.x * dens
                     val handlePxY = v.y * dens
                     // Render each vertex as a draggable Box overlay
+                    // 【問題二修正】編輯點置中：扣除半徑轉換為像素 (20dp * dens)
                     Box(
                         modifier = Modifier
                             .offset {
                                 androidx.compose.ui.unit.IntOffset(
-                                    (handlePxX - 20f).toInt(),
-                                    (handlePxY - 20f).toInt()
+                                    (handlePxX - 20f * dens).toInt(),
+                                    (handlePxY - 20f * dens).toInt()
                                 )
                             }
                             .size(40.dp)
                             .background(
-                                if (idx == drawingVertices.lastIndex) Color(0xFFFF5722) else Color.Red,
+                                if (baselineBoundaryVertices == null && idx == targetVertices.lastIndex) Color(0xFFFF5722)
+                                else if (baselineBoundaryVertices != null) Color(0xFF1E88E5)
+                                else Color.Red,
                                 shape = androidx.compose.foundation.shape.CircleShape
                             )
                             .pointerInput(idx) {
-                                detectDragGestures { change, _ ->
+                                var virtualMapX = 0f
+                                var virtualMapY = 0f
+                                detectDragGestures(
+                                    onDragStart = {
+                                        val startPos = currentDrawingVertices[idx]
+                                        virtualMapX = startPos.x
+                                        virtualMapY = startPos.y
+                                        isDraggingHandle = true
+                                        dragPreviewVertices = currentDrawingVertices
+                                    },
+                                    onDragEnd = {
+                                        isDraggingHandle = false
+                                        if (baselineBoundaryVertices != null) {
+                                            // 微調模式：承認修改到 drawingVertices
+                                            onBoundaryVertexMove(idx, PointF(virtualMapX, virtualMapY))
+                                        }
+                                        // isDraggingHandle=false 觸發 LaunchedEffect 根據新的 drawingVertices 更新預覽
+                                    },
+                                    onDragCancel = {
+                                        isDraggingHandle = false
+                                        dragPreviewVertices = currentDrawingVertices // 回復預覽至首次狀態
+                                    }
+                                ) { change, dragAmount ->
                                     change.consume()
-                                    val cX = canvasSize.width / 2f
-                                    val cY = canvasSize.height / 2f
-                                    val rawPxX = (change.position.x + handlePxX - 20f)
-                                    val rawPxY = (change.position.y + handlePxY - 20f)
-                                    val mapPxX2 = (rawPxX - currentMapOffset.x - cX) / currentMapScale + cX
-                                    val mapPxY2 = (rawPxY - currentMapOffset.y - cY) / currentMapScale + cY
-                                    val targetX = mapPxX2 / dens
-                                    val targetY = mapPxY2 / dens
-                                    // Snap orthogonally from previous vertex
-                                    val snapped = if (idx > 0) {
-                                        val prev = drawingVertices[idx - 1]
-                                        val ddx = kotlin.math.abs(targetX - prev.x)
-                                        val ddy = kotlin.math.abs(targetY - prev.y)
-                                        if (ddx > ddy) PointF(targetX, prev.y)
-                                        else PointF(prev.x, targetY)
-                                    } else PointF(targetX, targetY)
-                                    onDrawingVertexMove(idx, snapped)
+                                    // dragAmount is in raw screen pixels. Convert to map dp:
+                                    virtualMapX += dragAmount.x / dens
+                                    virtualMapY += dragAmount.y / dens
+                                    
+                                    if (baselineBoundaryVertices == null) {
+                                        // For drawing mode, update directly as before (instant snap)
+                                        val snapped = if (idx > 0) {
+                                            val prev = currentDrawingVertices[idx - 1]
+                                            val ddx = kotlin.math.abs(virtualMapX - prev.x)
+                                            val ddy = kotlin.math.abs(virtualMapY - prev.y)
+                                            if (ddx > ddy) PointF(virtualMapX, prev.y)
+                                            else PointF(prev.x, virtualMapY)
+                                        } else PointF(virtualMapX, virtualMapY)
+                                        onDrawingVertexMove(idx, snapped)
+                                    } else {
+                                        // For Canva style editing, compute the orthogonal changes on the preview state
+                                        val verts = currentDrawingVertices.toMutableList()
+                                        val old = verts[idx]
+                                        val newPos = PointF(virtualMapX, virtualMapY)
+                                        verts[idx] = newPos
+                                        
+                                        val prevIdx = (idx - 1 + verts.size) % verts.size
+                                        val nextIdx = (idx + 1) % verts.size
+                                        
+                                        if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
+                                        else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
+                                        
+                                        if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
+                                        else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
+                                        
+                                        dragPreviewVertices = verts
+                                    }
                                 }
                             }
                     )
                 }
+
+                // 微調模式（有基線）：顯示線段中點脇囊
+                if (baselineBoundaryVertices != null && targetVertices.size >= 3) {
+                    for (idx in targetVertices.indices) {
+                        val p1 = targetVertices[idx]
+                        val p2 = targetVertices[(idx + 1) % targetVertices.size]
+                        val midX = (p1.x + p2.x) / 2f
+                        val midY = (p1.y + p2.y) / 2f
+                        val isHoriz = p1.y == p2.y
+                        
+                        val handlePxX = midX * dens
+                        val handlePxY = midY * dens
+                        
+                        // 【問題二修正】編輯點置中：根據是水平或垂直，扣除一半寬高的像素值 (30dp/15dp * dens)
+                        Box(
+                            modifier = Modifier
+                                .offset {
+                                    androidx.compose.ui.unit.IntOffset(
+                                        (handlePxX - (if (isHoriz) 30f else 15f) * dens).toInt(),
+                                        (handlePxY - (if (isHoriz) 15f else 30f) * dens).toInt()
+                                    )
+                                }
+                                .size(
+                                    width = if (isHoriz) 60.dp else 30.dp,
+                                    height = if (isHoriz) 30.dp else 60.dp
+                                )
+                                .background(Color(0xFF43A047).copy(alpha = 0.8f), shape = androidx.compose.foundation.shape.RoundedCornerShape(15.dp))
+                                .pointerInput(idx) {
+                                    var virtualMapX = 0f
+                                    var virtualMapY = 0f
+                                    detectDragGestures(
+                                        onDragStart = {
+                                            val p1 = currentDrawingVertices[idx]
+                                            val p2 = currentDrawingVertices[(idx + 1) % currentDrawingVertices.size]
+                                            virtualMapX = (p1.x + p2.x) / 2f
+                                            virtualMapY = (p1.y + p2.y) / 2f
+                                            isDraggingHandle = true
+                                            dragPreviewVertices = currentDrawingVertices
+                                        },
+                                        onDragEnd = {
+                                            isDraggingHandle = false
+                                            onBoundaryMidpointMove(idx, PointF(virtualMapX, virtualMapY))
+                                            // isDraggingHandle=false 觸發 LaunchedEffect 更新預覽
+                                        },
+                                        onDragCancel = {
+                                            isDraggingHandle = false
+                                            dragPreviewVertices = currentDrawingVertices // 回復預覽
+                                        }
+                                    ) { change, dragAmount ->
+                                        change.consume()
+                                        virtualMapX += dragAmount.x / dens
+                                        virtualMapY += dragAmount.y / dens
+                                        
+                                        // Compute preview locally
+                                        val verts = currentDrawingVertices.toMutableList()
+                                        val nextIdx = (idx + 1) % verts.size
+                                        val p1 = verts[idx]
+                                        val p2 = verts[nextIdx]
+                                        val isHoriz = p1.y == p2.y
+                                        
+                                        if (isHoriz) {
+                                            verts[idx] = PointF(p1.x, virtualMapY)
+                                            verts[nextIdx] = PointF(p2.x, virtualMapY)
+                                        } else {
+                                            verts[idx] = PointF(virtualMapX, p1.y)
+                                            verts[nextIdx] = PointF(virtualMapX, p2.y)
+                                        }
+                                        dragPreviewVertices = verts
+                                    }
+                                }
+                        )
+                    }
+                }
             }
 
+            val isObjectsInteractive = isEditing && !isDrawingBoundary && !isRecordingWalkPath
             mapObjects.forEach { obj ->
                 MapObjectView(
                         obj = obj,
-                        isEditing = isEditing,
+                        isInteractive = isObjectsInteractive,
                         isSelected = (selectedObjectId == obj.id),
-                        onClick = { if (isEditing) selectedObjectId = obj.id },
+                        onClick = { if (isObjectsInteractive) selectedObjectId = obj.id },
                         onDelete = {
                             onDeleteObject(obj.id)
                             selectedObjectId = null
@@ -2081,87 +2388,79 @@ fun MapCanvas(
                                 }
                             }
 
-                            // --- PRIORITY: Teleport to finger position if the spot is clear ---
-                            if (isPosValid(idealX, idealY)) {
-                                if (idealX != obj.x || idealY != obj.y) {
-                                    onObjectMove(obj.id, idealX - obj.x, idealY - obj.y)
-                                }
-                            } else {
-                                // Finger position is blocked: fall back to incremental sliding per axis
-                                val stepXDp = sDx / density
-                                val stepYDp = sDy / density
-
-                                // --- Try moving along X ---
-                                var targetX = obj.x + stepXDp
-                                var canMoveX = true
-
-                                if (!isPosValid(targetX, obj.y)) {
+                            // --- Move towards idealX and idealY independently ---
+                            val diffX = idealX - obj.x
+                            var finalX = obj.x
+                            if (diffX != 0f) {
+                                if (isPosValid(idealX, obj.y)) {
+                                    finalX = idealX
+                                } else {
                                     val collidingX = mapObjects.find { other ->
                                         val otherW = other.width * other.scale
                                         val otherH = other.height * other.scale
                                         other.id != obj.id &&
-                                                targetX < other.x + otherW &&
-                                                targetX + objWidth > other.x &&
+                                                idealX < other.x + otherW &&
+                                                idealX + objWidth > other.x &&
                                                 obj.y < other.y + otherH &&
                                                 obj.y + objHeight > other.y
                                     }
+                                    var snapped = false
                                     if (collidingX != null) {
-                                        val snapX =
-                                            if (stepXDp > 0) collidingX.x - objWidth
-                                            else collidingX.x + (collidingX.width * collidingX.scale)
-                                        if (isPosValid(snapX, obj.y)) targetX = snapX
-                                        else canMoveX = false
-                                    } else {
-                                        // Blocked by boundary — binary search to snap to edge
+                                        val snapX = if (diffX > 0) collidingX.x - objWidth else collidingX.x + (collidingX.width * collidingX.scale)
+                                        if ((if (diffX > 0) snapX >= obj.x else snapX <= obj.x) && isPosValid(snapX, obj.y)) {
+                                            finalX = snapX
+                                            snapped = true
+                                        }
+                                    }
+                                    if (!snapped) {
                                         var low = 0f
-                                        var high = stepXDp
-                                        for (i in 0..5) {
+                                        var high = diffX
+                                        for (i in 0..8) {
                                             val mid = (low + high) / 2
                                             if (isPosValid(obj.x + mid, obj.y)) low = mid else high = mid
                                         }
-                                        targetX = obj.x + low
-                                        if (targetX == obj.x) canMoveX = false
+                                        finalX = obj.x + low
                                     }
                                 }
-                                val finalX = if (canMoveX) targetX else obj.x
+                            }
 
-                                // --- Try moving along Y ---
-                                var targetY = obj.y + stepYDp
-                                var canMoveY = true
-
-                                if (!isPosValid(finalX, targetY)) {
+                            val diffY = idealY - obj.y
+                            var finalY = obj.y
+                            if (diffY != 0f) {
+                                if (isPosValid(finalX, idealY)) {
+                                    finalY = idealY
+                                } else {
                                     val collidingY = mapObjects.find { other ->
                                         val otherW = other.width * other.scale
                                         val otherH = other.height * other.scale
                                         other.id != obj.id &&
                                                 finalX < other.x + otherW &&
                                                 finalX + objWidth > other.x &&
-                                                targetY < other.y + otherH &&
-                                                targetY + objHeight > other.y
+                                                idealY < other.y + otherH &&
+                                                idealY + objHeight > other.y
                                     }
+                                    var snapped = false
                                     if (collidingY != null) {
-                                        val snapY =
-                                            if (stepYDp > 0) collidingY.y - objHeight
-                                            else collidingY.y + (collidingY.height * collidingY.scale)
-                                        if (isPosValid(finalX, snapY)) targetY = snapY
-                                        else canMoveY = false
-                                    } else {
-                                        // Blocked by boundary — binary search to snap to edge
+                                        val snapY = if (diffY > 0) collidingY.y - objHeight else collidingY.y + (collidingY.height * collidingY.scale)
+                                        if ((if (diffY > 0) snapY >= obj.y else snapY <= obj.y) && isPosValid(finalX, snapY)) {
+                                            finalY = snapY
+                                            snapped = true
+                                        }
+                                    }
+                                    if (!snapped) {
                                         var low = 0f
-                                        var high = stepYDp
-                                        for (i in 0..5) {
+                                        var high = diffY
+                                        for (i in 0..8) {
                                             val mid = (low + high) / 2
                                             if (isPosValid(finalX, obj.y + mid)) low = mid else high = mid
                                         }
-                                        targetY = obj.y + low
-                                        if (targetY == obj.y) canMoveY = false
+                                        finalY = obj.y + low
                                     }
                                 }
-                                val finalY = if (canMoveY) targetY else obj.y
+                            }
 
-                                if (finalX != obj.x || finalY != obj.y) {
-                                    onObjectMove(obj.id, finalX - obj.x, finalY - obj.y)
-                                }
+                            if (finalX != obj.x || finalY != obj.y) {
+                                onObjectMove(obj.id, finalX - obj.x, finalY - obj.y)
                             }
                         },
                         onDragEnd = { /* No-op */}
@@ -2175,9 +2474,9 @@ fun MapCanvas(
                 // Walk path — yellow line + dots
                 if (walkPath.size >= 2) {
                     val pathObj = Path()
-                    pathObj.moveTo(walkPath[0].first * dens, walkPath[0].second * dens)
+                    pathObj.moveTo(walkPath[0].x * dens, walkPath[0].y * dens)
                     for (i in 1 until walkPath.size) {
-                        pathObj.lineTo(walkPath[i].first * dens, walkPath[i].second * dens)
+                        pathObj.lineTo(walkPath[i].x * dens, walkPath[i].y * dens)
                     }
                     drawPath(pathObj, color = Color(0xFFFFD600), style = Stroke(width = 3f * dens))
                 }
@@ -2185,7 +2484,7 @@ fun MapCanvas(
                     drawCircle(
                             color = Color(0xFFFFD600),
                             radius = 5f * dens,
-                            center = Offset(pt.first * dens, pt.second * dens)
+                            center = Offset(pt.x * dens, pt.y * dens)
                     )
                 }
 
@@ -2329,7 +2628,7 @@ fun MapObjectVisuals(
 @Composable
 fun MapObjectView(
         obj: MapObject,
-        isEditing: Boolean,
+        isInteractive: Boolean,
         isSelected: Boolean,
         onClick: () -> Unit,
         onDelete: () -> Unit,
@@ -2355,7 +2654,7 @@ fun MapObjectView(
                                     height = (obj.height * obj.scale).dp
                             )
                             .run {
-                                if (isEditing) {
+                                if (isInteractive) {
                                     this
                                             .pointerInput(isSelected) {
                                                 detectTapGestures(onTap = { onClick() })
@@ -2397,7 +2696,7 @@ fun MapObjectView(
             )
         }
 
-        if (isSelected && isEditing) {
+        if (isSelected && isInteractive) {
             Surface(
                     modifier =
                             Modifier.align(Alignment.TopStart)

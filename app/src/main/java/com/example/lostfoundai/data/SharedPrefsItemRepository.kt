@@ -19,6 +19,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     private val itemsFlow = MutableStateFlow<List<MissingItem>>(emptyList())
     private val mapObjectsFlow = MutableStateFlow<List<MapObject>>(emptyList())
     private val roomBoundaryFlow = MutableStateFlow(RoomBoundary())
+    private val walkPathFlow = MutableStateFlow<List<PointF>>(emptyList())
     private val savedBoundariesFlow = MutableStateFlow<List<SavedBoundary>>(emptyList())
     private val gridEnabledFlow = MutableStateFlow(prefs.getBoolean("is_grid_enabled", true))
 
@@ -36,14 +37,17 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
             val legacyItems = prefs.getString("missing_items", null)
             val legacyObjects = prefs.getString("map_objects", null)
             val legacyBoundary = prefs.getString("room_boundary", null)
+            val legacyWalkPath = prefs.getString("walk_path", null)
 
             prefs.edit().apply {
                 if (legacyItems != null) putString("default_missing_items", legacyItems)
                 if (legacyObjects != null) putString("default_map_objects", legacyObjects)
                 if (legacyBoundary != null) putString("default_room_boundary", legacyBoundary)
+                if (legacyWalkPath != null) putString("default_walk_path", legacyWalkPath)
                 remove("missing_items")
                 remove("map_objects")
                 remove("room_boundary")
+                remove("walk_path")
             }.apply()
         }
     }
@@ -52,6 +56,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         itemsFlow.value = loadItems()
         mapObjectsFlow.value = loadMapObjects()
         roomBoundaryFlow.value = loadRoomBoundary()
+        walkPathFlow.value = loadWalkPath()
         savedBoundariesFlow.value = loadSavedBoundaries()
     }
 
@@ -93,6 +98,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
             remove("${roomId}_missing_items")
             remove("${roomId}_map_objects")
             remove("${roomId}_room_boundary")
+            remove("${roomId}_walk_path")
         }.apply()
     }
 
@@ -194,6 +200,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     override fun clearRoom() {
         saveMapObjects(emptyList())
         saveRoomBoundary(RoomBoundary())
+        saveWalkPath(emptyList())
     }
 
     // --- Room Boundary ---
@@ -216,6 +223,29 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
 
     override fun setRoomBoundary(boundary: RoomBoundary) {
         saveRoomBoundary(boundary)
+    }
+
+    // --- Walk Path ---
+
+    private fun loadWalkPath(): List<PointF> {
+        val json = prefs.getString("${currentRoomId}_walk_path", null)
+        return if (json != null) {
+            val type = object : TypeToken<List<PointF>>() {}.type
+            gson.fromJson(json, type)
+        } else {
+            emptyList()
+        }
+    }
+
+    private fun saveWalkPath(path: List<PointF>) {
+        prefs.edit().putString("${currentRoomId}_walk_path", gson.toJson(path)).apply()
+        walkPathFlow.value = path
+    }
+
+    override fun getWalkPath(): Flow<List<PointF>> = walkPathFlow
+
+    override fun setWalkPath(path: List<PointF>) {
+        saveWalkPath(path)
     }
 
     // --- Saved Boundaries (Global across rooms) ---
@@ -249,6 +279,13 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         saveSavedBoundaries(savedBoundariesFlow.value.map {
             if (it.id == id) it.copy(name = newName) else it
         })
+    }
+
+    override fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
+        val updated = savedBoundariesFlow.value.map {
+            if (it.id == id) it.copy(vertices = newVertices) else it
+        }
+        saveSavedBoundaries(updated)
     }
 
     // --- Grid Enabled (Global) ---

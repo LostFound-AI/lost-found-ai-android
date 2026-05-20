@@ -21,6 +21,11 @@ interface ItemRepository {
     fun addSavedBoundary(boundary: SavedBoundary)
     fun removeSavedBoundary(id: String)
     fun renameSavedBoundary(id: String, newName: String)
+    fun updateSavedBoundary(id: String, newVertices: List<PointF>)
+
+    // Walk Path
+    fun getWalkPath(): Flow<List<PointF>>
+    fun setWalkPath(path: List<PointF>)
 
     // Room Management
     fun getRooms(): Flow<List<RoomData>>
@@ -130,10 +135,22 @@ class InMemoryItemRepository : ItemRepository {
         }
     }
 
+    override fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
+        savedBoundariesFlow.value = savedBoundariesFlow.value.map {
+            if (it.id == id) it.copy(vertices = newVertices) else it
+        }
+    }
+
     private val gridEnabledFlow = MutableStateFlow(true)
     override fun isGridEnabled(): Flow<Boolean> = gridEnabledFlow
     override fun setGridEnabled(enabled: Boolean) {
         gridEnabledFlow.value = enabled
+    }
+    
+    private val walkPathFlow = MutableStateFlow<List<PointF>>(emptyList())
+    override fun getWalkPath(): Flow<List<PointF>> = walkPathFlow
+    override fun setWalkPath(path: List<PointF>) {
+        walkPathFlow.value = path
     }
     private val roomsFlow = MutableStateFlow<List<RoomData>>(
         listOf(RoomData("default", "預設房間"))

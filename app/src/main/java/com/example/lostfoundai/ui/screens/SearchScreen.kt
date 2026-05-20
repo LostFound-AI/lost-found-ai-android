@@ -13,6 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.lostfoundai.data.ItemCategory
 import com.example.lostfoundai.data.ItemSize
+import com.example.lostfoundai.ui.components.KeyboardAccessoryProvider
+import com.example.lostfoundai.ui.components.AccessoryOutlinedTextField
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,14 +91,16 @@ fun AddItemDialog(
         onDismissRequest = onDismiss,
         title = { Text("新增物品") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("物品名稱") }
-                )
-                // Need dropdowns for Category/Size here in real app
-                Text("預設為 飾品(極小) 方便測試", style = MaterialTheme.typography.bodySmall)
+            KeyboardAccessoryProvider {
+                Column {
+                    AccessoryOutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("物品名稱") }
+                    )
+                    // Need dropdowns for Category/Size here in real app
+                    Text("預設為 飾品(極小) 方便測試", style = MaterialTheme.typography.bodySmall)
+                }
             }
         },
         confirmButton = {

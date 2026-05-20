@@ -31,14 +31,24 @@ class MapViewModel(
     private val _predictedSpots = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
     val predictedSpots: StateFlow<List<Pair<Float, Float>>> = _predictedSpots.asStateFlow()
 
-    private val _walkPath = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
-    val walkPath: StateFlow<List<Pair<Float, Float>>> = _walkPath.asStateFlow()
+    val walkPath: StateFlow<List<PointF>> = repository.getWalkPath().stateIn(
+        scope = viewModelScope,
+        started = kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000),
+        initialValue = emptyList()
+    )
 
     private val _isRecordingWalkPath = MutableStateFlow(false)
     val isRecordingWalkPath: StateFlow<Boolean> = _isRecordingWalkPath.asStateFlow()
 
+    private val _isWalkPathVisible = MutableStateFlow(true)
+    val isWalkPathVisible: StateFlow<Boolean> = _isWalkPathVisible.asStateFlow()
+
     fun toggleWalkPathRecording() {
         _isRecordingWalkPath.value = !_isRecordingWalkPath.value
+    }
+    
+    fun toggleWalkPathVisibility() {
+        _isWalkPathVisible.value = !_isWalkPathVisible.value
     }
 
     // UI states for dragging from toolbar
@@ -72,6 +82,10 @@ class MapViewModel(
 
     fun renameSavedBoundary(id: String, newName: String) {
         repository.renameSavedBoundary(id, newName)
+    }
+
+    fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
+        repository.updateSavedBoundary(id, newVertices)
     }
 
     fun clearRoom() {
@@ -180,18 +194,19 @@ class MapViewModel(
     }
 
     fun addWalkPathPoint(x: Float, y: Float) {
-        _walkPath.value = _walkPath.value + Pair(x, y)
+        val current = walkPath.value
+        repository.setWalkPath(current + PointF(x, y))
     }
     
     fun clearWalkPath() {
-        _walkPath.value = emptyList()
+        repository.setWalkPath(emptyList())
     }
 
     fun startAIPrediction(itemId: String) {
         viewModelScope.launch {
             val item = repository.getItemById(itemId) ?: return@launch
             // We pass the walk path, the item, and the current map objects.
-            val spots = predictionEngine.calculatePrediction(item, mapObjects.value, _walkPath.value)
+            val spots = predictionEngine.calculatePrediction(item, mapObjects.value, walkPath.value)
             _predictedSpots.value = spots
         }
     }
