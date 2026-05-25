@@ -183,3 +183,10 @@ fun MapObjectType.chineseName(): String = when (this) {
 
 fun MapObjectType.defaultWidth(): Float = getDefaultDimensions().first
 fun MapObjectType.defaultHeight(): Float = getDefaultDimensions().second
+
+data class PredictionResult(
+    val itemId: String = "",
+    val points: List<PointF> = emptyList(),
+    val lines: List<Pair<PointF, PointF>> = emptyList()
+)
+

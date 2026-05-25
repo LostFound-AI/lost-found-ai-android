@@ -20,6 +20,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     private val mapObjectsFlow = MutableStateFlow<List<MapObject>>(emptyList())
     private val roomBoundaryFlow = MutableStateFlow(RoomBoundary())
     private val walkPathFlow = MutableStateFlow<List<PointF>>(emptyList())
+    private val walkPathVisibleFlow = MutableStateFlow(true)
     private val savedBoundariesFlow = MutableStateFlow<List<SavedBoundary>>(emptyList())
     private val gridEnabledFlow = MutableStateFlow(prefs.getBoolean("is_grid_enabled", true))
 
@@ -57,6 +58,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         mapObjectsFlow.value = loadMapObjects()
         roomBoundaryFlow.value = loadRoomBoundary()
         walkPathFlow.value = loadWalkPath()
+        walkPathVisibleFlow.value = prefs.getBoolean("${currentRoomId}_walk_path_visible", true)
         savedBoundariesFlow.value = loadSavedBoundaries()
     }
 
@@ -246,6 +248,13 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
 
     override fun setWalkPath(path: List<PointF>) {
         saveWalkPath(path)
+    }
+
+    override fun isWalkPathVisible(): Flow<Boolean> = walkPathVisibleFlow
+
+    override fun setWalkPathVisibility(visible: Boolean) {
+        prefs.edit().putBoolean("${currentRoomId}_walk_path_visible", visible).apply()
+        walkPathVisibleFlow.value = visible
     }
 
     // --- Saved Boundaries (Global across rooms) ---

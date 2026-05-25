@@ -7,6 +7,7 @@ import com.example.lostfoundai.data.ItemRepository
 import com.example.lostfoundai.data.MapObject
 import com.example.lostfoundai.data.MapObjectType
 import com.example.lostfoundai.data.PointF
+import com.example.lostfoundai.data.PredictionResult
 import com.example.lostfoundai.data.RoomBoundary
 import com.example.lostfoundai.data.RoomShapePreset
 import com.example.lostfoundai.data.SavedBoundary
@@ -28,8 +29,11 @@ class MapViewModel(
         initialValue = emptyList()
     )
 
-    private val _predictedSpots = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
-    val predictedSpots: StateFlow<List<Pair<Float, Float>>> = _predictedSpots.asStateFlow()
+    private val _predictionResult = MutableStateFlow<PredictionResult>(PredictionResult())
+    val predictionResult: StateFlow<PredictionResult> = _predictionResult.asStateFlow()
+
+    private val _isPredicting = MutableStateFlow(false)
+    val isPredicting: StateFlow<Boolean> = _isPredicting.asStateFlow()
 
     val walkPath: StateFlow<List<PointF>> = repository.getWalkPath().stateIn(
         scope = viewModelScope,
@@ -40,15 +44,18 @@ class MapViewModel(
     private val _isRecordingWalkPath = MutableStateFlow(false)
     val isRecordingWalkPath: StateFlow<Boolean> = _isRecordingWalkPath.asStateFlow()
 
-    private val _isWalkPathVisible = MutableStateFlow(true)
-    val isWalkPathVisible: StateFlow<Boolean> = _isWalkPathVisible.asStateFlow()
+    val isWalkPathVisible: StateFlow<Boolean> = repository.isWalkPathVisible().stateIn(
+        scope = viewModelScope,
+        started = kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000),
+        initialValue = true
+    )
 
     fun toggleWalkPathRecording() {
         _isRecordingWalkPath.value = !_isRecordingWalkPath.value
     }
     
     fun toggleWalkPathVisibility() {
-        _isWalkPathVisible.value = !_isWalkPathVisible.value
+        repository.setWalkPathVisibility(!isWalkPathVisible.value)
     }
 
     // UI states for dragging from toolbar
@@ -204,15 +211,20 @@ class MapViewModel(
 
     fun startAIPrediction(itemId: String) {
         viewModelScope.launch {
-            val item = repository.getItemById(itemId) ?: return@launch
-            // We pass the walk path, the item, and the current map objects.
-            val spots = predictionEngine.calculatePrediction(item, mapObjects.value, walkPath.value)
-            _predictedSpots.value = spots
+            _isPredicting.value = true
+            try {
+                val item = repository.getItemById(itemId) ?: return@launch
+                val boundary = roomBoundary.value.vertices
+                val result = predictionEngine.calculatePrediction(item, mapObjects.value, walkPath.value, boundary)
+                _predictionResult.value = result.copy(itemId = item.id)
+            } finally {
+                _isPredicting.value = false
+            }
         }
     }
     
     fun clearPredictedSpots() {
-        _predictedSpots.value = emptyList()
+        _predictionResult.value = PredictionResult()
     }
 
     val gridEnabled: StateFlow<Boolean> = repository.isGridEnabled().stateIn(

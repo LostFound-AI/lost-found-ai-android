@@ -26,6 +26,8 @@ interface ItemRepository {
     // Walk Path
     fun getWalkPath(): Flow<List<PointF>>
     fun setWalkPath(path: List<PointF>)
+    fun isWalkPathVisible(): Flow<Boolean>
+    fun setWalkPathVisibility(visible: Boolean)
 
     // Room Management
     fun getRooms(): Flow<List<RoomData>>
@@ -151,6 +153,12 @@ class InMemoryItemRepository : ItemRepository {
     override fun getWalkPath(): Flow<List<PointF>> = walkPathFlow
     override fun setWalkPath(path: List<PointF>) {
         walkPathFlow.value = path
+    }
+    
+    private val walkPathVisibleFlow = MutableStateFlow(true)
+    override fun isWalkPathVisible(): Flow<Boolean> = walkPathVisibleFlow
+    override fun setWalkPathVisibility(visible: Boolean) {
+        walkPathVisibleFlow.value = visible
     }
     private val roomsFlow = MutableStateFlow<List<RoomData>>(
         listOf(RoomData("default", "預設房間"))

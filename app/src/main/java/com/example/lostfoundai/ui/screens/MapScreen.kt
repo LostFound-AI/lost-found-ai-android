@@ -2,6 +2,7 @@ package com.example.lostfoundai.ui.screens
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,6 +14,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -30,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -69,6 +78,7 @@ import com.example.lostfoundai.data.MissingItem
 import com.example.lostfoundai.data.PointF
 import com.example.lostfoundai.data.RoomBoundary
 import com.example.lostfoundai.data.RoomShapePreset
+import com.example.lostfoundai.data.PredictionResult
 import com.example.lostfoundai.data.SavedBoundary
 import com.example.lostfoundai.data.chineseName
 import com.example.lostfoundai.data.defaultHeight
@@ -97,7 +107,8 @@ fun MapScreen(
         onNavigateHome: () -> Unit = {}
 ) {
     val mapObjects by mapViewModel.mapObjects.collectAsState(initial = emptyList())
-    val predictedSpots by mapViewModel.predictedSpots.collectAsState()
+    val predictionResult by mapViewModel.predictionResult.collectAsState()
+    val isPredicting by mapViewModel.isPredicting.collectAsState()
     val searchItems by searchViewModel.filteredItems.collectAsState(initial = emptyList())
     val roomBoundary by mapViewModel.roomBoundary.collectAsState()
     val savedBoundaries by mapViewModel.savedBoundaries.collectAsState()
@@ -129,6 +140,7 @@ fun MapScreen(
     val categories = listOf("飾品", "隨身物品", "電子產品", "紙本", "衛浴用品", "家電配件", "衣物", "自訂")
     var selectedCategory by remember { mutableStateOf(categories[0]) }
     var customCategory by remember { mutableStateOf("") }
+    var pendingSizeIndex by remember { mutableStateOf<Int?>(null) }
 
     var sizeExpanded by remember { mutableStateOf(false) }
     val sizes =
@@ -145,7 +157,11 @@ fun MapScreen(
     var selectedSize by remember { mutableStateOf(sizes[0]) }
 
     LaunchedEffect(selectedCategory) {
-        if (selectedSize !in sizes) {
+        if (pendingSizeIndex != null) {
+            val idx = pendingSizeIndex!!.coerceIn(0, sizes.size - 1)
+            selectedSize = sizes[idx]
+            pendingSizeIndex = null
+        } else if (selectedSize !in sizes) {
             selectedSize = sizes[0]
         }
     }
@@ -177,8 +193,67 @@ fun MapScreen(
     val density = LocalDensity.current.density
 
     var mapScale by remember { mutableFloatStateOf(1f) }
+
+    val currentDrawingVertices by androidx.compose.runtime.rememberUpdatedState(drawingVertices)
+    val currentIsDrawingBoundary by androidx.compose.runtime.rememberUpdatedState(isDrawingBoundary)
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (currentIsDrawingBoundary && currentDrawingVertices.isNotEmpty()) {
+                mapViewModel.setRoomBoundary(
+                    com.example.lostfoundai.data.RoomBoundary(
+                        preset = com.example.lostfoundai.data.RoomShapePreset.CUSTOM,
+                        vertices = currentDrawingVertices
+                    )
+                )
+            }
+            mapViewModel.clearPredictedSpots()
+        }
+    }
     var mapOffset by remember { mutableStateOf(Offset.Zero) }
     var canvasSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+
+    var hasCenteredBoundary by remember(roomBoundary.savedBoundaryId) { mutableStateOf(false) }
+
+    LaunchedEffect(isRecordingWalkPath) {
+        if (isRecordingWalkPath && !isWalkPathVisible) {
+            mapViewModel.toggleWalkPathVisibility()
+        }
+    }
+
+    LaunchedEffect(roomBoundary, canvasSize) {
+        if (!hasCenteredBoundary && canvasSize != androidx.compose.ui.unit.IntSize.Zero && roomBoundary.vertices.isNotEmpty()) {
+            val verts = roomBoundary.vertices
+            val minX = verts.minOf { it.x }
+            val maxX = verts.maxOf { it.x }
+            val minY = verts.minOf { it.y }
+            val maxY = verts.maxOf { it.y }
+
+            val boundaryWidthDp = maxX - minX
+            val boundaryHeightDp = maxY - minY
+            val bCenterX_dp = (minX + maxX) / 2
+            val bCenterY_dp = (minY + maxY) / 2
+
+            val canvasWidthDp = canvasSize.width / density
+            val canvasHeightDp = canvasSize.height / density
+
+            val scaleX = if (boundaryWidthDp > 0) canvasWidthDp / boundaryWidthDp else 1f
+            val scaleY = if (boundaryHeightDp > 0) canvasHeightDp / boundaryHeightDp else 1f
+            
+            val targetScale = kotlin.math.min(scaleX, scaleY) * 0.8f
+            mapScale = targetScale.coerceIn(0.5f, 3f)
+
+            val bCenterX_px = bCenterX_dp * density
+            val bCenterY_px = bCenterY_dp * density
+            val centerX_px = canvasSize.width / 2f
+            val centerY_px = canvasSize.height / 2f
+            
+            mapOffset = Offset(
+                (centerX_px - bCenterX_px) * mapScale,
+                (centerY_px - bCenterY_px) * mapScale
+            )
+            hasCenteredBoundary = true
+        }
+    }
 
     // Global Drag & Drop State
     var draggingType by remember { mutableStateOf<MapObjectType?>(null) }
@@ -223,9 +298,10 @@ fun MapScreen(
                         content {
                             image(bmp)
                             text(
-                                "請辨識圖片中的主要物品名稱與類別，以JSON格式回應，格式如下：\n" +
-                                "{\"name\":\"物品名稱，用繁體中文2-5個字\",\"category\":\"類別\"}\n" +
-                                "category 必須是以下其中一個：飾品、隨身物品、電子產品、紙本、衛浴用品、家電配件、衣物"
+                                "請辨識圖片中的主要物品名稱、類別與相對大小，以JSON格式回應，格式如下：\n" +
+                                "{\"name\":\"物品名稱，用繁體中文2-5個字\",\"category\":\"類別\",\"size\":0}\n" +
+                                "category 必須是以下其中一個：飾品、隨身物品、電子產品、紙本、衛浴用品、家電配件、衣物\n" +
+                                "size 必須是整數：0 (小), 1 (中), 2 (大)。請依據物品在該類別中的常見相對大小判斷。"
                             )
                         }
                     )
@@ -234,15 +310,23 @@ fun MapScreen(
                     val json = org.json.JSONObject(jsonStr)
                     val detectedName = json.optString("name", "")
                     val detectedCat = json.optString("category", "其他")
+                    val detectedSize = if (json.has("size")) json.optInt("size", 0) else null
                     isAnalyzingPhoto = false
                     if (detectedName.isNotEmpty()) {
                         detectedChips = listOf(detectedName)
                         if (itemName.isEmpty()) itemName = detectedName
                     }
-                    if (detectedCat in categories) selectedCategory = detectedCat
+                    if (detectedCat in categories) {
+                        selectedCategory = detectedCat
+                        Log.d("MapScreen", "目前的物品類別是: $detectedCat")
+                        if (detectedSize != null) {
+                            pendingSizeIndex = detectedSize
+                            Log.d("MapScreen", "目前的物品大小是: $detectedSize")
+                        }
+                    }
                 } catch (e: Exception) {
                     isAnalyzingPhoto = false
-                    android.util.Log.e("MapScreen", "Gemini analysis failed", e)
+                    Log.e("MapScreen", "Gemini analysis failed", e)
                 }
             }
         }
@@ -380,7 +464,7 @@ fun MapScreen(
                                 drawingVertices = removeCollinearPoints(verts)
                             },
                             mapObjects = mapObjects,
-                            predictedSpots = predictedSpots,
+                            predictionResult = predictionResult,
                             storedItems = searchItems,
                             walkPath = if (isWalkPathVisible) walkPath else emptyList(),
                             isEditing = isEditing,
@@ -459,7 +543,6 @@ fun MapScreen(
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
-                            // 【問題三修正】從外部限制物件庫的整體高度，使其底部避開下方按鈕
                             .padding(bottom = 100.dp)
                     ) {
                         Toolbar(
@@ -486,6 +569,29 @@ fun MapScreen(
                                     hasValidGhostPos = false
                                 }
                         )
+                    }
+                }
+
+                // Overlay for AI Prediction Loading
+                if (isPredicting) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.6f))
+                            .pointerInput(Unit) {
+                                detectTapGestures { } // Block interactions
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color.White)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "正在尋找...",
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
                     }
                 }
 
@@ -621,6 +727,15 @@ fun MapScreen(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (drawingVertices.isNotEmpty()) {
+                                        drawingVertices = drawingVertices.dropLast(1)
+                                    }
+                                },
+                                enabled = drawingVertices.isNotEmpty(),
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("上一步") }
                             OutlinedButton(
                                 onClick = { drawingVertices = emptyList() },
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
@@ -767,7 +882,7 @@ fun MapScreen(
 
                 // Map legend (bottom-right, normal view only)
                 if (!isDrawingBoundary && !isEditing &&
-                        (predictedSpots.isNotEmpty() || walkPath.isNotEmpty() || searchItems.any { it.manualX != null })) {
+                        (predictionResult.points.isNotEmpty() || predictionResult.lines.isNotEmpty() || walkPath.isNotEmpty() || searchItems.any { it.manualX != null })) {
                     Surface(
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -779,7 +894,7 @@ fun MapScreen(
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (walkPath.isNotEmpty()) LegendRow(Color(0xFFFFD600), "行走路線")
                             if (searchItems.any { it.manualX != null }) LegendRow(Color(0xFF4CAF50), "物品位置")
-                            if (predictedSpots.isNotEmpty()) LegendRow(Color(0xFFE53935), "AI 預測")
+                            if (predictionResult.points.isNotEmpty() || predictionResult.lines.isNotEmpty()) LegendRow(Color(0xFFE53935), "AI 預測")
                         }
                     }
                 }
@@ -807,6 +922,30 @@ fun MapScreen(
                     }
                 }
 
+                // Center Top Prediction Title
+                if (predictionResult.itemId.isNotEmpty()) {
+                    val predictedItem = searchItems.find { it.id == predictionResult.itemId }
+                    if (predictedItem != null) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+                            color = Color.White,
+                            shadowElevation = 4.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = PrimaryIndigo, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("尋找: ${predictedItem.name}", style = MaterialTheme.typography.bodyMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
                 if (!isDrawingBoundary && !isEditing) {
                     // Bottom capsule: clear predictions | 新增物品 | 尋找
                     Surface(
@@ -822,7 +961,7 @@ fun MapScreen(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (predictedSpots.isNotEmpty() || specifiedLocation != null) {
+                            if (predictionResult.points.isNotEmpty() || predictionResult.lines.isNotEmpty() || specifiedLocation != null) {
                                 IconButton(
                                         onClick = {
                                             mapViewModel.clearPredictedSpots()
@@ -879,6 +1018,7 @@ fun MapScreen(
 
     if (showSearchSheet) {
 
+
         Box(
                 modifier =
                         Modifier.fillMaxSize()
@@ -894,8 +1034,10 @@ fun MapScreen(
         ) {
             ModalBottomSheet(
                     onDismissRequest = { showSearchSheet = false },
+                    modifier = Modifier.padding(top = 64.dp),
                     sheetState = sheetState,
-                    containerColor = Color.White
+                    containerColor = Color.White,
+                    dragHandle = null
             ) {
                 KeyboardAccessoryProvider {
                     Column(
@@ -903,6 +1045,15 @@ fun MapScreen(
                                     Modifier.fillMaxWidth()
                                             .padding(horizontal = 24.dp, vertical = 16.dp)
                     ) {
+                        // 自訂拖曳把手區塊 (Drag Handle)
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .background(Color.LightGray, CircleShape)
+                                .align(Alignment.CenterHorizontally)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
                     if (showHistory) {
                         // ... History View ...
                         Row(
@@ -911,7 +1062,7 @@ fun MapScreen(
                                 verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                    "查詢紀錄",
+                                    "尋找紀錄",
                                     style = MaterialTheme.typography.titleLarge,
                                     color = Color.Black
                             )
@@ -925,9 +1076,17 @@ fun MapScreen(
                         }
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false)
+                        ) {
                             items(searchItems) { item ->
-                                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                ) {
                                     Row(
                                             modifier = Modifier.fillMaxWidth().padding(16.dp),
                                             verticalAlignment = Alignment.CenterVertically,
@@ -1086,23 +1245,28 @@ fun MapScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                     } else {
                         // --- Form View ---
-
-                        Box(
-                                modifier = Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.Center
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            Text(
+                                "新增物品",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Color.Black
+                            )
                             Button(
-                                    onClick = {
-                                        showHistory = true
-                                        editingItem = null
-                                        itemName = ""
-                                        specifiedLocation = null
-                                        capturedPhotoPath = null
-                                        detectedChips = emptyList()
-                                        preLinkFurnitureId = null
-                                    },
-                                    modifier = Modifier.fillMaxWidth(0.5f)
-                            ) { Text("查詢紀錄", color = Color.White) }
+                                onClick = {
+                                    showHistory = true
+                                    editingItem = null
+                                    itemName = ""
+                                    specifiedLocation = null
+                                    capturedPhotoPath = null
+                                    detectedChips = emptyList()
+                                    preLinkFurnitureId = null
+                                },
+                                modifier = Modifier.fillMaxWidth(0.5f)
+                            ) { Text("尋找紀錄", color = Color.White) }
                         }
 
                         Spacer(modifier = Modifier.height(16.dp))
@@ -1453,6 +1617,7 @@ fun MapScreen(
                                                 else -> com.example.lostfoundai.data.ItemSize.MEDIUM
                                             }
 
+                                    var triggerAIPredictionForId: String? = null
                                     if (editingItem != null) {
                                         searchViewModel.updateItem(
                                                 editingItem!!.copy(
@@ -1465,8 +1630,9 @@ fun MapScreen(
                                                         photoPath = capturedPhotoPath ?: editingItem!!.photoPath
                                                 )
                                         )
+                                        if (specifiedLocation == null) triggerAIPredictionForId = editingItem!!.id
                                     } else {
-                                        searchViewModel.addMissingItem(
+                                        val newId = searchViewModel.addMissingItem(
                                                 name = itemName.ifEmpty { "新物品" },
                                                 category = cat,
                                                 size = sz,
@@ -1478,6 +1644,7 @@ fun MapScreen(
                                                 linkedFurnitureId = preLinkFurnitureId,
                                                 photoPath = capturedPhotoPath
                                         )
+                                        if (specifiedLocation == null) triggerAIPredictionForId = newId
                                     }
                                     editingItem = null
                                     specifiedLocation = null
@@ -1485,7 +1652,13 @@ fun MapScreen(
                                     capturedPhotoPath = null
                                     detectedChips = emptyList()
                                     preLinkFurnitureId = null
-                                    showHistory = true
+                                    
+                                    if (triggerAIPredictionForId != null) {
+                                        mapViewModel.startAIPrediction(triggerAIPredictionForId)
+                                        showSearchSheet = false
+                                    } else {
+                                        showHistory = true
+                                    }
                                 },
                                 modifier =
                                         Modifier.fillMaxWidth(0.6f)
@@ -1926,7 +2099,7 @@ fun removeCollinearPoints(vertices: List<PointF>): List<PointF> {
 @Composable
 fun MapCanvas(
         mapObjects: List<MapObject>,
-        predictedSpots: List<Pair<Float, Float>>,
+        predictionResult: PredictionResult,
         storedItems: List<MissingItem> = emptyList(),
         walkPath: List<PointF> = emptyList(),
         isEditing: Boolean,
@@ -1964,9 +2137,13 @@ fun MapCanvas(
     // 【需求二】常駐預覽：進入微調模式（有 baselineBoundaryVertices）後，
     // 若無正在進行的拖曳，預覽邊界就跟隨 drawingVertices（即最新確認後的形狀）。
     // 拖曳中則由手勢直接更新 dragPreviewVertices（每幀即時刷新）。
-    LaunchedEffect(isDrawingBoundary, baselineBoundaryVertices, drawingVertices) {
-        if (isDrawingBoundary && baselineBoundaryVertices != null && !isDraggingHandle) {
-            dragPreviewVertices = drawingVertices
+    LaunchedEffect(isDrawingBoundary, baselineBoundaryVertices, drawingVertices, isDraggingHandle) {
+        if (isDrawingBoundary && !isDraggingHandle) {
+            if (baselineBoundaryVertices != null) {
+                dragPreviewVertices = drawingVertices
+            } else {
+                dragPreviewVertices = null
+            }
         } else if (!isDrawingBoundary) {
             dragPreviewVertices = null
         }
@@ -2207,11 +2384,11 @@ fun MapCanvas(
                         modifier = Modifier
                             .offset {
                                 androidx.compose.ui.unit.IntOffset(
-                                    (handlePxX - 20f * dens).toInt(),
-                                    (handlePxY - 20f * dens).toInt()
+                                    (handlePxX - 12f * dens).toInt(),
+                                    (handlePxY - 12f * dens).toInt()
                                 )
                             }
-                            .size(40.dp)
+                            .size(24.dp)
                             .background(
                                 if (baselineBoundaryVertices == null && idx == targetVertices.lastIndex) Color(0xFFFF5722)
                                 else if (baselineBoundaryVertices != null) Color(0xFF1E88E5)
@@ -2234,6 +2411,13 @@ fun MapCanvas(
                                         if (baselineBoundaryVertices != null) {
                                             // 微調模式：承認修改到 drawingVertices
                                             onBoundaryVertexMove(idx, PointF(virtualMapX, virtualMapY))
+                                        } else {
+                                            // 繪製模式：承認預覽修改
+                                            dragPreviewVertices?.let { preview ->
+                                                if (idx < preview.size) {
+                                                    onDrawingVertexMove(idx, preview[idx])
+                                                }
+                                            }
                                         }
                                         // isDraggingHandle=false 觸發 LaunchedEffect 根據新的 drawingVertices 更新預覽
                                     },
@@ -2246,7 +2430,7 @@ fun MapCanvas(
                                     // dragAmount is in raw screen pixels. Convert to map dp:
                                     virtualMapX += dragAmount.x / dens
                                     virtualMapY += dragAmount.y / dens
-                                    
+
                                     if (baselineBoundaryVertices == null) {
                                         // For drawing mode, update directly as before (instant snap)
                                         val snapped = if (idx > 0) {
@@ -2256,23 +2440,26 @@ fun MapCanvas(
                                             if (ddx > ddy) PointF(virtualMapX, prev.y)
                                             else PointF(prev.x, virtualMapY)
                                         } else PointF(virtualMapX, virtualMapY)
-                                        onDrawingVertexMove(idx, snapped)
+                                        
+                                        val verts = currentDrawingVertices.toMutableList()
+                                        if (idx < verts.size) verts[idx] = snapped
+                                        dragPreviewVertices = verts
                                     } else {
                                         // For Canva style editing, compute the orthogonal changes on the preview state
                                         val verts = currentDrawingVertices.toMutableList()
                                         val old = verts[idx]
                                         val newPos = PointF(virtualMapX, virtualMapY)
                                         verts[idx] = newPos
-                                        
+
                                         val prevIdx = (idx - 1 + verts.size) % verts.size
                                         val nextIdx = (idx + 1) % verts.size
-                                        
+
                                         if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
                                         else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
-                                        
+
                                         if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
                                         else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
-                                        
+
                                         dragPreviewVertices = verts
                                     }
                                 }
@@ -2331,14 +2518,14 @@ fun MapCanvas(
                                         change.consume()
                                         virtualMapX += dragAmount.x / dens
                                         virtualMapY += dragAmount.y / dens
-                                        
+
                                         // Compute preview locally
                                         val verts = currentDrawingVertices.toMutableList()
                                         val nextIdx = (idx + 1) % verts.size
                                         val p1 = verts[idx]
                                         val p2 = verts[nextIdx]
                                         val isHoriz = p1.y == p2.y
-                                        
+
                                         if (isHoriz) {
                                             verts[idx] = PointF(p1.x, virtualMapY)
                                             verts[nextIdx] = PointF(p2.x, virtualMapY)
@@ -2506,16 +2693,38 @@ fun MapCanvas(
                 }
 
                 // AI predictions — red pulsing circles (dp coords)
-                predictedSpots.forEach { spot ->
+                predictionResult.points.forEach { spot ->
                     drawCircle(
                             color = Color(0xFFE53935).copy(alpha = 0.4f),
                             radius = 14f * dens,
-                            center = Offset(spot.first * dens, spot.second * dens)
+                            center = Offset(spot.x * dens, spot.y * dens)
                     )
                     drawCircle(
                             color = Color(0xFFE53935).copy(alpha = 0.7f),
                             radius = 6f * dens,
-                            center = Offset(spot.first * dens, spot.second * dens)
+                            center = Offset(spot.x * dens, spot.y * dens)
+                    )
+                }
+
+                // AI predictions — red dashed lines (dp coords)
+                predictionResult.lines.forEach { line ->
+                    drawLine(
+                            color = Color(0xFFE53935).copy(alpha = 0.6f),
+                            start = Offset(line.first.x * dens, line.first.y * dens),
+                            end = Offset(line.second.x * dens, line.second.y * dens),
+                            strokeWidth = 3f * dens,
+                            pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(15f, 15f), 0f)
+                    )
+                    // Draw end point indicators
+                    drawCircle(
+                            color = Color(0xFFE53935).copy(alpha = 0.6f),
+                            radius = 4f * dens,
+                            center = Offset(line.first.x * dens, line.first.y * dens)
+                    )
+                    drawCircle(
+                            color = Color(0xFFE53935).copy(alpha = 0.6f),
+                            radius = 4f * dens,
+                            center = Offset(line.second.x * dens, line.second.y * dens)
                     )
                 }
 
