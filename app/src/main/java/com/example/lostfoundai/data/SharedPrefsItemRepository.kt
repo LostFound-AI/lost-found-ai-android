@@ -290,9 +290,9 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         })
     }
 
-    override fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
+    override fun updateSavedBoundary(id: String, newVertices: List<PointF>, newInnerWalls: List<List<PointF>>) {
         val updated = savedBoundariesFlow.value.map {
-            if (it.id == id) it.copy(vertices = newVertices) else it
+            if (it.id == id) it.copy(vertices = newVertices, innerWalls = newInnerWalls) else it
         }
         saveSavedBoundaries(updated)
     }

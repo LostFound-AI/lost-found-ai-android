@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -128,6 +129,7 @@ fun MapScreen(
     // Naming dialog for custom boundaries
     var showNameDialog by remember { mutableStateOf(false) }
     var pendingBoundaryVertices by remember { mutableStateOf<List<PointF>>(emptyList()) }
+    var pendingInnerWalls by remember { mutableStateOf<List<List<PointF>>>(emptyList()) }
 
     // Manual specify location
     var isSpecifyingLocation by remember { mutableStateOf(false) }
@@ -196,6 +198,9 @@ fun MapScreen(
 
     val currentDrawingVertices by androidx.compose.runtime.rememberUpdatedState(drawingVertices)
     val currentIsDrawingBoundary by androidx.compose.runtime.rememberUpdatedState(isDrawingBoundary)
+    var isDrawingInnerWall by remember { mutableStateOf(false) }
+    var innerWallVertices by remember { mutableStateOf(emptyList<PointF>()) }
+    
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
             if (currentIsDrawingBoundary && currentDrawingVertices.isNotEmpty()) {
@@ -262,6 +267,7 @@ fun MapScreen(
     // Track the ghost's last valid (non-overlapping, within-bounds) position
     var lastValidGhostX by remember { mutableFloatStateOf(0f) }
     var lastValidGhostY by remember { mutableFloatStateOf(0f) }
+    var lastValidGhostRotation by remember { mutableFloatStateOf(0f) }
     var hasValidGhostPos by remember { mutableStateOf(false) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -408,6 +414,18 @@ fun MapScreen(
             ) {
                 // Main Map Area (Full Size)
                 Box(modifier = Modifier.fillMaxSize().background(MapBackground)) {
+                    val adaptedInnerWalls = remember(drawingVertices, baselineBoundaryVertices, roomBoundary.innerWalls) {
+                        if (isDrawingBoundary && baselineBoundaryVertices != null) {
+                            com.example.lostfoundai.utils.BoundaryUtils.adaptInnerWallsToNewBoundary(
+                                innerWalls = roomBoundary.innerWalls,
+                                oldBoundary = baselineBoundaryVertices!!,
+                                newBoundary = drawingVertices
+                            )
+                        } else {
+                            roomBoundary.innerWalls
+                        }
+                    }
+
                     MapCanvas(
                             onDrawingVertexMove = { idx, newPos ->
                                 val verts = drawingVertices.toMutableList()
@@ -442,6 +460,9 @@ fun MapScreen(
                                 // 【需求一】移除因頂點移動產生的共線節點
                                 drawingVertices = removeCollinearPoints(verts)
                             },
+                            onWalkPathPointMove = { idx, newPos ->
+                                mapViewModel.updateWalkPathPoint(idx, newPos.x, newPos.y)
+                            },
                             onBoundaryMidpointMove = { idx, newPos ->
                                 val verts = drawingVertices.toMutableList()
                                 val nextIdx = (idx + 1) % verts.size
@@ -463,6 +484,37 @@ fun MapScreen(
                                 // 【需求一】移除因線段平移產生的共線節點
                                 drawingVertices = removeCollinearPoints(verts)
                             },
+                            onBoundaryShapeUpdate = { newVerts ->
+                                drawingVertices = removeCollinearPoints(newVerts)
+                            },
+                            onInnerWallTap = { idx ->
+                                val wallToEdit = roomBoundary.innerWalls[idx]
+                                val newWalls = roomBoundary.innerWalls.toMutableList()
+                                newWalls.removeAt(idx)
+                                mapViewModel.updateInnerWalls(newWalls)
+                                innerWallVertices = wallToEdit
+                                isDrawingInnerWall = true
+                            },
+                            onInnerWallVertexMove = { idx, newPos ->
+                                val verts = innerWallVertices.toMutableList()
+                                val old = verts[idx]
+                                verts[idx] = newPos
+                                
+                                if (idx > 0) {
+                                    val prevIdx = idx - 1
+                                    if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
+                                    else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
+                                }
+                                if (idx < verts.size - 1) {
+                                    val nextIdx = idx + 1
+                                    if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
+                                    else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
+                                }
+                                innerWallVertices = removeCollinearPoints(verts)
+                            },
+                            onInnerWallShapeUpdate = { newVerts ->
+                                innerWallVertices = removeCollinearPoints(newVerts)
+                            },
                             mapObjects = mapObjects,
                             predictionResult = predictionResult,
                             storedItems = searchItems,
@@ -477,25 +529,20 @@ fun MapScreen(
                             isDrawingBoundary = isDrawingBoundary,
                             baselineBoundaryVertices = baselineBoundaryVertices,
                             drawingVertices = drawingVertices,
+                            innerWalls = adaptedInnerWalls,
+                            isDrawingInnerWall = isDrawingInnerWall,
+                            innerWallVertices = innerWallVertices,
                             isSpecifyingLocation = isSpecifyingLocation,
                             isRecordingWalkPath = isRecordingWalkPath,
                             specifiedLocation = specifiedLocation,
                             onCanvasTap = { tapOffsetDp ->
+                                val effectiveBoundary = pendingBoundaryVertices ?: baselineBoundaryVertices ?: roomBoundary.vertices
                                 when {
                                     isDrawingBoundary -> {
-                                        if (drawingVertices.isNotEmpty()) {
-                                            val lastPoint = drawingVertices.last()
-                                            val dx = kotlin.math.abs(tapOffsetDp.x - lastPoint.x)
-                                            val dy = kotlin.math.abs(tapOffsetDp.y - lastPoint.y)
-                                            val snappedPoint = if (dx > dy) {
-                                                PointF(tapOffsetDp.x, lastPoint.y)
-                                            } else {
-                                                PointF(lastPoint.x, tapOffsetDp.y)
-                                            }
-                                            drawingVertices = drawingVertices + snappedPoint
-                                        } else {
-                                            drawingVertices = drawingVertices + tapOffsetDp
-                                        }
+                                        // This shouldn't be called directly for drag, handled by onDrawingVertexAdd
+                                    }
+                                    isDrawingInnerWall -> {
+                                        // Handled by onDrawingVertexAdd
                                     }
                                     isSpecifyingLocation -> {
                                         specifiedLocation = tapOffsetDp
@@ -503,6 +550,19 @@ fun MapScreen(
                                         showSearchSheet = true
                                     }
                                     isRecordingWalkPath -> mapViewModel.addWalkPathPoint(tapOffsetDp.x, tapOffsetDp.y)
+                                }
+                            },
+                            onDrawingVertexAdd = { point, prepend ->
+                                if (isDrawingBoundary) {
+                                    drawingVertices = if (prepend) listOf(point) + drawingVertices else drawingVertices + point
+                                } else if (isDrawingInnerWall) {
+                                    innerWallVertices = if (prepend) listOf(point) + innerWallVertices else innerWallVertices + point
+                                }
+                            },
+                            onInnerWallComplete = {
+                                if (innerWallVertices.isNotEmpty()) {
+                                    mapViewModel.setRoomBoundary(roomBoundary.copy(innerWalls = roomBoundary.innerWalls + listOf(innerWallVertices)))
+                                    innerWallVertices = emptyList()
                                 }
                             },
                             onFurnitureTap = { obj ->
@@ -516,6 +576,9 @@ fun MapScreen(
                                             obj.copy(x = obj.x + dx, y = obj.y + dy)
                                     )
                                 }
+                            },
+                            onObjectUpdate = { obj ->
+                                mapViewModel.updateMapObject(obj)
                             },
                             onObjectRotate = { id ->
                                 val obj = mapObjects.find { it.id == id }
@@ -539,7 +602,7 @@ fun MapScreen(
                 }
 
                 // Toolbar as Overlay
-                if (isEditing && !isDrawingBoundary && !isRecordingWalkPath && !showBoundarySheet) {
+                if (isEditing && !isDrawingBoundary && !isDrawingInnerWall && !isRecordingWalkPath && !showBoundarySheet) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
@@ -555,13 +618,28 @@ fun MapScreen(
                                     // Always place at the ghost's displayed position
                                     if (hasValidGhostPos) {
                                         val dims = droppedType.getDefaultDimensions()
+                                        val isBoundaryObject = droppedType == MapObjectType.WINDOW || droppedType == MapObjectType.DOOR_LEFT || droppedType == MapObjectType.DOOR_RIGHT
+                                        
+                                        var finalW = dims.first
+                                        var finalH = dims.second
+                                        
+                                        if (isBoundaryObject) {
+                                            val rem = lastValidGhostRotation % 180f
+                                            val isOrthogonalSwap = (kotlin.math.abs(rem) == 90f || kotlin.math.abs(rem) == 270f)
+                                            if (isOrthogonalSwap) {
+                                                finalW = dims.second
+                                                finalH = dims.first
+                                            }
+                                        }
+                                        
                                         mapViewModel.addMapObject(
                                                 MapObject(
                                                         type = droppedType,
                                                         x = lastValidGhostX,
                                                         y = lastValidGhostY,
-                                                        width = dims.first,
-                                                        height = dims.second
+                                                        width = finalW,
+                                                        height = finalH,
+                                                        rotation = lastValidGhostRotation
                                                 )
                                         )
                                     }
@@ -638,8 +716,20 @@ fun MapScreen(
                     val stepGhostY = virtualYStr - prevY
 
                     fun isGhostValid(px: Float, py: Float): Boolean {
-                        if (!BoundaryUtils.rectInPolygon(px, py, rawWidth, rawHeight, effectiveBoundary))
-                            return false
+                        val isBoundaryObject = draggingType == MapObjectType.WINDOW || draggingType == MapObjectType.DOOR_LEFT || draggingType == MapObjectType.DOOR_RIGHT
+                        if (!isBoundaryObject) {
+                            if (!BoundaryUtils.rectInPolygon(px, py, rawWidth, rawHeight, effectiveBoundary)) return false
+                            
+                            val intersectsInnerWall = roomBoundary.innerWalls.any { wall ->
+                                (0 until wall.size - 1).any { i ->
+                                    BoundaryUtils.rectIntersectsLine(px, py, rawWidth, rawHeight, wall[i], wall[i+1])
+                                }
+                            }
+                            if (intersectsInnerWall) return false
+                        } else {
+                            return true
+                        }
+                        
                         return mapObjects.none { other ->
                             px < other.x + (other.width * other.scale) &&
                                     px + rawWidth > other.x &&
@@ -686,9 +776,63 @@ fun MapScreen(
                     }
 
                     // Update last valid position
-                    lastValidGhostX = ghostX
-                    lastValidGhostY = ghostY
-                    hasValidGhostPos = true
+                    // Update last valid position
+                    val isBoundaryObject = draggingType == MapObjectType.WINDOW || draggingType == MapObjectType.DOOR_LEFT || draggingType == MapObjectType.DOOR_RIGHT
+                    val allWallSegments = mutableListOf<Pair<PointF, PointF>>()
+                    if (effectiveBoundary.size >= 2) {
+                        for (i in effectiveBoundary.indices) {
+                            allWallSegments.add(effectiveBoundary[i] to effectiveBoundary[(i + 1) % effectiveBoundary.size])
+                        }
+                    }
+                    roomBoundary.innerWalls.forEach { wall ->
+                        for (i in 0 until wall.size - 1) {
+                            allWallSegments.add(wall[i] to wall[i + 1])
+                        }
+                    }
+
+                    if (isBoundaryObject && allWallSegments.isNotEmpty()) {
+                        val cx = virtualXStr + rawWidth / 2f
+                        val cy = virtualYStr + rawHeight / 2f
+                        var bestDistSq = Float.MAX_VALUE
+                        var bestPos = PointF(virtualXStr, virtualYStr)
+                        var bestRot = 0f
+                        for ((p1, p2) in allWallSegments) {
+                            val dx = p2.x - p1.x
+                            val dy = p2.y - p1.y
+                            val lenSq = dx*dx + dy*dy
+                            if (lenSq == 0f) continue
+                            val len = kotlin.math.sqrt(lenSq.toDouble()).toFloat()
+                            val t = ((cx - p1.x)*dx + (cy - p1.y)*dy) / lenSq
+                            val ct = t.coerceIn(0f, 1f)
+                            val nx = p1.x + ct * dx
+                            val ny = p1.y + ct * dy
+                            val distSq = (cx - nx)*(cx - nx) + (cy - ny)*(cy - ny)
+                            if (distSq < bestDistSq) {
+                                bestDistSq = distSq
+                                if (draggingType == MapObjectType.WINDOW) {
+                                    bestPos = PointF(nx - rawWidth / 2f, ny - rawHeight / 2f)
+                                    bestRot = (kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat())
+                                } else {
+                                    val N = PointF(-dy/len, dx/len)
+                                    val dot = (cx - nx) * N.x + (cy - ny) * N.y
+                                    val usePosNormal = dot > 0
+                                    val finalCx = if (usePosNormal) nx + N.x * rawHeight / 2f else nx - N.x * rawHeight / 2f
+                                    val finalCy = if (usePosNormal) ny + N.y * rawHeight / 2f else ny - N.y * rawHeight / 2f
+                                    bestPos = PointF(finalCx - rawWidth / 2f, finalCy - rawHeight / 2f)
+                                    bestRot = if (usePosNormal) kotlin.math.atan2(-dy, -dx) * 180f / kotlin.math.PI.toFloat() else kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat()
+                                }
+                            }
+                        }
+                        lastValidGhostX = bestPos.x
+                        lastValidGhostY = bestPos.y
+                        lastValidGhostRotation = bestRot
+                        hasValidGhostPos = true
+                    } else {
+                        lastValidGhostX = ghostX
+                        lastValidGhostY = ghostY
+                        lastValidGhostRotation = 0f
+                        hasValidGhostPos = true
+                    }
 
                     // Forward project: map virtual dp → screen px
                     val testPxX = ghostX * density
@@ -709,7 +853,7 @@ fun MapScreen(
                                                     (rawHeight * mapScale).dp
                                             )
                                             .graphicsLayer { alpha = 0.7f }
-                    ) { MapObjectVisuals(type = draggingType!!, modifier = Modifier.fillMaxSize()) }
+                    ) { MapObjectVisuals(type = draggingType!!, modifier = Modifier.fillMaxSize().rotate(lastValidGhostRotation)) }
                 }
 
                 // Buttons Overlay
@@ -759,26 +903,33 @@ fun MapScreen(
 
                                             if (baselineBoundaryVertices != null) {
                                                 // ── 微調完成 ──────────────────────────────────────
+                                                val adaptedInnerWalls = com.example.lostfoundai.utils.BoundaryUtils.adaptInnerWallsToNewBoundary(
+                                                    roomBoundary.innerWalls, baselineBoundaryVertices!!, finalVertices
+                                                )
                                                 val savedId = roomBoundary.savedBoundaryId
                                                 if (savedId != null) {
                                                     // 【需求三】自訂邊界：原地更新
                                                     mapViewModel.updateSavedBoundary(savedId, finalVertices)
+                                                    mapViewModel.updateInnerWalls(adaptedInnerWalls)
                                                     mapViewModel.setRoomBoundary(
                                                         RoomBoundary(
                                                             preset = RoomShapePreset.CUSTOM,
                                                             vertices = finalVertices,
-                                                            savedBoundaryId = savedId
+                                                            savedBoundaryId = savedId,
+                                                            innerWalls = adaptedInnerWalls
                                                         )
                                                     )
                                                 } else {
                                                     // 【需求四】預設邊界：另存為新的自訂邊界，觸發命名對話框
                                                     pendingBoundaryVertices = finalVertices
+                                                    pendingInnerWalls = adaptedInnerWalls
                                                     showNameDialog = true
                                                 }
                                                 mapViewModel.relocateObjectsIntoBoundary(finalVertices)
                                             } else {
                                                 // ── 全新繪製完成：一般存檔流程 ───────────────
                                                 pendingBoundaryVertices = finalVertices
+                                                pendingInnerWalls = emptyList()
                                                 showNameDialog = true
                                             }
                                         }
@@ -806,6 +957,59 @@ fun MapScreen(
                             drawingVertices = emptyList()
                             baselineBoundaryVertices = null  // 清除底圖
                         }) {
+                            Text("取消微調", color = Color.White)
+                        }
+                    }
+                } else if (isDrawingInnerWall) {
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 28.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            shadowElevation = 8.dp,
+                            color = SurfaceColor
+                    ) {
+                        Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (innerWallVertices.isNotEmpty()) {
+                                        innerWallVertices = innerWallVertices.dropLast(1)
+                                    }
+                                },
+                                enabled = innerWallVertices.isNotEmpty(),
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("上一步") }
+                            OutlinedButton(
+                                onClick = { innerWallVertices = emptyList() },
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("清除重畫") }
+                            Button(
+                                    onClick = {
+                                        if (innerWallVertices.size >= 2) {
+                                            val finalWall = removeCollinearPoints(innerWallVertices)
+                                            mapViewModel.updateInnerWalls(roomBoundary.innerWalls + listOf(finalWall))
+                                        }
+                                        innerWallVertices = emptyList()
+                                    },
+                                    enabled = innerWallVertices.size >= 2,
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
+                            ) { Text("完成此牆") }
+                        }
+                    }
+                    Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp),
+                            color = Color(0xFF546E7A)
+                    ) {
+                        TextButton(onClick = {
+                            isDrawingInnerWall = false
+                            innerWallVertices = emptyList()
+                        }) {
                             Text("取消繪製", color = Color.White)
                         }
                     }
@@ -823,7 +1027,10 @@ fun MapScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedButton(
-                                onClick = { showBoundarySheet = true },
+                                onClick = { 
+                                    if (isRecordingWalkPath) mapViewModel.toggleWalkPathRecording()
+                                    showBoundarySheet = true 
+                                },
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
                             ) { Text("邊界管理") }
                             OutlinedButton(
@@ -831,7 +1038,12 @@ fun MapScreen(
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
                             ) { Text("路線編輯") }
                             Button(
-                                onClick = { isEditing = false },
+                                onClick = {
+                                    if (isRecordingWalkPath) {
+                                        mapViewModel.toggleWalkPathRecording()
+                                    }
+                                    isEditing = false
+                                },
                                 shape = androidx.compose.foundation.shape.RoundedCornerShape(50.dp)
                             ) { Text("完成編輯") }
                         }
@@ -865,6 +1077,11 @@ fun MapScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             TextButton(
+                                onClick = { mapViewModel.undoWalkPathPoint() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) { Text("上一步", color = Color(0xFF1A1C2E)) }
+                            TextButton(
                                 onClick = { mapViewModel.clearWalkPath() },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 modifier = Modifier.height(28.dp)
@@ -882,7 +1099,7 @@ fun MapScreen(
 
                 // Map legend (bottom-right, normal view only)
                 if (!isDrawingBoundary && !isEditing &&
-                        (predictionResult.points.isNotEmpty() || predictionResult.lines.isNotEmpty() || walkPath.isNotEmpty() || searchItems.any { it.manualX != null })) {
+                        (predictionResult.points.isNotEmpty() || predictionResult.lines.isNotEmpty() || (walkPath.isNotEmpty() && isWalkPathVisible) || searchItems.any { it.manualX != null })) {
                     Surface(
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -902,7 +1119,10 @@ fun MapScreen(
                 // Settings button (Material Icon FAB)
                 if (!isDrawingBoundary) {
                     Surface(
-                            onClick = { coroutineScope.launch { drawerState.open() } },
+                            onClick = { 
+                                if (isRecordingWalkPath) mapViewModel.toggleWalkPathRecording()
+                                coroutineScope.launch { drawerState.open() } 
+                            },
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(16.dp)
@@ -1008,6 +1228,27 @@ fun MapScreen(
                                     contentDescription = "Edit",
                                     tint = PrimaryIndigo,
                                     modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    
+                    // Center Coordinate Display
+                    if (canvasSize.width > 0f && canvasSize.height > 0f) {
+                        val centerVirtualX = (-mapOffset.x / mapScale + canvasSize.width / 2f) / density
+                        val centerVirtualY = (-mapOffset.y / mapScale + canvasSize.height / 2f) / density
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 16.dp, bottom = 100.dp),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                            color = SurfaceColor.copy(alpha = 0.8f),
+                            shadowElevation = 2.dp
+                        ) {
+                            Text(
+                                text = String.format("中心座標: X: %.1f, Y: %.1f", centerVirtualX, centerVirtualY),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = PrimaryIndigo,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
                     }
@@ -1777,11 +2018,33 @@ fun MapScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("選擇邊界形狀", style = MaterialTheme.typography.titleLarge, color = Color.Black)
-                    Button(onClick = {
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(modifier = Modifier.weight(1f), onClick = {
+                        showBoundarySheet = false
+                        innerWallVertices = emptyList()
+                        isDrawingInnerWall = true
+                    }) {
+                        Text("繪製牆面")
+                    }
+                    Button(modifier = Modifier.weight(1f), onClick = {
                         showBoundarySheet = false
                         // 進入微調模式：用 isDrawingBoundary 合併狀態，並記錄基線底圖
-                        baselineBoundaryVertices = roomBoundary.vertices
-                        drawingVertices = roomBoundary.vertices
+                        val fallbackBoundary = if (roomBoundary.vertices.isNotEmpty()) roomBoundary.vertices else {
+                            val pad = 32f
+                            val cw = canvasSize.width / density
+                            val ch = canvasSize.height / density
+                            listOf(
+                                PointF(pad, pad),
+                                PointF(cw - pad, pad),
+                                PointF(cw - pad, ch - pad),
+                                PointF(pad, ch - pad)
+                            )
+                        }
+                        baselineBoundaryVertices = fallbackBoundary
+                        drawingVertices = fallbackBoundary
                         isDrawingBoundary = true
                     }) {
                         Text("微調目前邊界")
@@ -1873,7 +2136,7 @@ fun MapScreen(
                             drawingVertices = emptyList()
                         },
                         modifier = Modifier.fillMaxWidth()
-                ) { Text("自訂繪製") }
+                ) { Text("自訂繪製邊界") }
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -1907,12 +2170,15 @@ fun MapScreen(
                                         RoomBoundary(
                                                 preset = RoomShapePreset.CUSTOM,
                                                 vertices = pendingBoundaryVertices,
-                                                savedBoundaryId = saved.id
+                                                savedBoundaryId = saved.id,
+                                                innerWalls = pendingInnerWalls
                                         )
                                 )
+                                mapViewModel.updateInnerWalls(pendingInnerWalls)
                                 mapViewModel.relocateObjectsIntoBoundary(pendingBoundaryVertices)
                                 showNameDialog = false
                                 pendingBoundaryVertices = emptyList()
+                                pendingInnerWalls = emptyList()
                             }
                     ) { Text("儲存") }
                 },
@@ -1921,6 +2187,7 @@ fun MapScreen(
                             onClick = {
                                 showNameDialog = false
                                 pendingBoundaryVertices = emptyList()
+                                pendingInnerWalls = emptyList()
                             }
                     ) { Text("取消") }
                 }
@@ -2112,15 +2379,26 @@ fun MapCanvas(
         isDrawingBoundary: Boolean,
         baselineBoundaryVertices: List<PointF>? = null,
         drawingVertices: List<PointF>,
+        innerWalls: List<List<PointF>> = emptyList(),
+        isDrawingInnerWall: Boolean = false,
+        innerWallVertices: List<PointF> = emptyList(),
         isSpecifyingLocation: Boolean,
         isRecordingWalkPath: Boolean = false,
         specifiedLocation: PointF?,
         onCanvasTap: (PointF) -> Unit,
+        onDrawingVertexAdd: (PointF, Boolean) -> Unit = { _, _ -> },
+        onInnerWallTap: (Int) -> Unit = {},
+        onInnerWallComplete: () -> Unit = {},
         onFurnitureTap: (MapObject) -> Unit = {},
         onDrawingVertexMove: (Int, PointF) -> Unit,
         onBoundaryVertexMove: (Int, PointF) -> Unit = { _, _ -> },
+        onBoundaryShapeUpdate: (List<PointF>) -> Unit = {},
         onBoundaryMidpointMove: (Int, PointF) -> Unit = { _, _ -> },
+        onInnerWallVertexMove: (Int, PointF) -> Unit = { _, _ -> },
+        onInnerWallShapeUpdate: (List<PointF>) -> Unit = {},
+        onWalkPathPointMove: (Int, PointF) -> Unit = { _, _ -> },
         onObjectMove: (String, Float, Float) -> Unit,
+        onObjectUpdate: (MapObject) -> Unit = {},
         onObjectRotate: (String) -> Unit,
         onDeleteObject: (String) -> Unit,
         onObjectScaleChange: (String, Float) -> Unit,
@@ -2133,6 +2411,19 @@ fun MapCanvas(
     var dragPreviewVertices by remember { mutableStateOf<List<PointF>?>(null) }
     // isDraggingHandle: 是否正在拖曳任一控制點
     var isDraggingHandle by remember { mutableStateOf(false) }
+
+    // Drag Drawing State
+    var activeDragStartPoint by remember { mutableStateOf<PointF?>(null) }
+    var activeDragCurrentPoint by remember { mutableStateOf<PointF?>(null) }
+    var activeDragIsInvalid by remember { mutableStateOf(false) }
+    var activeDragStartIdx by remember { mutableStateOf<Int?>(null) } // 0 for head, lastIndex for tail
+    var activeDragLClosePos by remember { mutableStateOf<List<PointF>?>(null) }
+    var activeDragWasSnapped by remember { mutableStateOf<Boolean>(false) }
+
+    // Whole Shape Dragging State
+    var isDraggingWholeShape by remember { mutableStateOf(false) }
+    var wholeShapeInitialVertices by remember { mutableStateOf<List<PointF>?>(null) }
+    var wholeShapeDragStartPoint by remember { mutableStateOf<PointF?>(null) }
 
     // 【需求二】常駐預覽：進入微調模式（有 baselineBoundaryVertices）後，
     // 若無正在進行的拖曳，預覽邊界就跟隨 drawingVertices（即最新確認後的形狀）。
@@ -2159,8 +2450,10 @@ fun MapCanvas(
     val currentMapScale by rememberUpdatedState(mapScale)
     val currentMapOffset by rememberUpdatedState(mapOffset)
     val currentDrawingVertices by rememberUpdatedState(drawingVertices)
+    val currentWalkPath by rememberUpdatedState(walkPath)
     val currentOnScaleChange by rememberUpdatedState(onScaleChange)
     val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     Box(
             modifier =
@@ -2177,45 +2470,320 @@ fun MapCanvas(
                                     currentOnOffsetChange(currentMapOffset + pan)
                                 }
                             }
-                            .pointerInput(isDrawingBoundary, isSpecifyingLocation, isRecordingWalkPath) {
-                                detectTapGestures(
-                                        onTap = { tapOffset ->
-                                            // Convert screen tap to map virtual dp coordinates
+                            .pointerInput(isDrawingBoundary, isSpecifyingLocation, isRecordingWalkPath, isDrawingInnerWall, drawingVertices, innerWallVertices) {
+                                if (isDrawingBoundary || isDrawingInnerWall) {
+                                    detect1FingerDrawGestures(
+                                        onDragStart = { tapOffset ->
                                             val dens = density.toFloat()
                                             val centerX = size.width / 2f
                                             val centerY = size.height / 2f
-                                            val mapPxX =
-                                                    (tapOffset.x -
-                                                            currentMapOffset.x -
-                                                            centerX) / currentMapScale + centerX
-                                            val mapPxY =
-                                                    (tapOffset.y -
-                                                            currentMapOffset.y -
-                                                            centerY) / currentMapScale + centerY
+                                            val mapPxX = (tapOffset.x - currentMapOffset.x - centerX) / currentMapScale + centerX
+                                            val mapPxY = (tapOffset.y - currentMapOffset.y - centerY) / currentMapScale + centerY
                                             val virtualX = mapPxX / dens
                                             val virtualY = mapPxY / dens
-
-                                            if (isDrawingBoundary || isSpecifyingLocation || isRecordingWalkPath) {
-                                                onCanvasTap(PointF(virtualX, virtualY))
-                                            } else if (!isEditing) {
-                                                // Check if a furniture object was tapped
-                                                val tappedObj = mapObjects.find { obj ->
-                                                    val objW = obj.width * obj.scale
-                                                    val objH = obj.height * obj.scale
-                                                    virtualX >= obj.x && virtualX <= obj.x + objW &&
-                                                            virtualY >= obj.y && virtualY <= obj.y + objH
+                                            
+                                            val targetVertices = if (isDrawingBoundary) drawingVertices else innerWallVertices
+                                            
+                                            if (targetVertices.isEmpty()) {
+                                                activeDragStartIdx = null
+                                                activeDragStartPoint = PointF(virtualX, virtualY)
+                                                activeDragCurrentPoint = PointF(virtualX, virtualY)
+                                            } else {
+                                                var hit = false
+                                                for (i in 0 until targetVertices.size - 1) {
+                                                    val dist = com.example.lostfoundai.utils.BoundaryUtils.distanceToSegment(virtualX, virtualY, targetVertices[i], targetVertices[i+1])
+                                                    if (dist < 20f) { hit = true; break }
                                                 }
-                                                if (tappedObj != null) {
-                                                    onFurnitureTap(tappedObj)
+                                                // For boundary, check closing segment if there are at least 3 vertices
+                                                if (!hit && isDrawingBoundary && targetVertices.size >= 3) {
+                                                    val dist = com.example.lostfoundai.utils.BoundaryUtils.distanceToSegment(virtualX, virtualY, targetVertices.last(), targetVertices.first())
+                                                    if (dist < 20f) { hit = true }
+                                                }
+                                                
+                                                if (hit) {
+                                                    isDraggingWholeShape = true
+                                                    wholeShapeInitialVertices = targetVertices
+                                                    wholeShapeDragStartPoint = PointF(virtualX, virtualY)
+                                                    dragPreviewVertices = targetVertices
+                                                    activeDragStartIdx = null
+                                                    activeDragStartPoint = null
+                                                } else {
+                                                    activeDragStartIdx = null
+                                                    activeDragStartPoint = null
+                                                }
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            if (isDraggingWholeShape) {
+                                                if (dragPreviewVertices != null) {
+                                                    if (isDrawingBoundary) {
+                                                        onBoundaryShapeUpdate(dragPreviewVertices!!)
+                                                    } else if (isDrawingInnerWall) {
+                                                        onInnerWallShapeUpdate(dragPreviewVertices!!)
+                                                    }
+                                                }
+                                                isDraggingWholeShape = false
+                                                wholeShapeDragStartPoint = null
+                                                wholeShapeInitialVertices = null
+                                                return@detect1FingerDrawGestures
+                                            }
+
+                                            var wasSnapped = false
+                                            if (activeDragStartPoint != null && activeDragCurrentPoint != null && !activeDragIsInvalid) {
+                                                val targetVertices = if (isDrawingBoundary) drawingVertices else innerWallVertices
+                                                if (targetVertices.isEmpty()) {
+                                                    onDrawingVertexAdd(activeDragStartPoint!!, false)
+                                                }
+                                                val prepend = activeDragStartIdx == 0
+                                                onDrawingVertexAdd(activeDragCurrentPoint!!, prepend)
+                                                if (activeDragLClosePos != null) {
+                                                    if (prepend) {
+                                                        activeDragLClosePos!!.reversed().forEach { p -> onDrawingVertexAdd(p, true) }
+                                                    } else {
+                                                        activeDragLClosePos!!.forEach { p -> onDrawingVertexAdd(p, false) }
+                                                    }
+                                                }
+                                                // Check if it was an inner wall that snapped
+                                                // Removed auto-completion so user can continue operating
+                                                // if (isDrawingInnerWall && activeDragWasSnapped) {
+                                                //     wasSnapped = true
+                                                // }
+                                            }
+                                            activeDragStartPoint = null
+                                            activeDragCurrentPoint = null
+                                            activeDragIsInvalid = false
+                                            activeDragLClosePos = null
+                                            activeDragStartIdx = null
+                                            activeDragWasSnapped = false
+                                            
+                                            if (wasSnapped) {
+                                                onInnerWallComplete()
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            isDraggingWholeShape = false
+                                            wholeShapeDragStartPoint = null
+                                            wholeShapeInitialVertices = null
+                                            
+                                            activeDragStartPoint = null
+                                            activeDragCurrentPoint = null
+                                            activeDragIsInvalid = false
+                                            activeDragLClosePos = null
+                                            activeDragStartIdx = null
+                                        },
+                                        onDrag = { tapOffset ->
+                                            if (isDraggingWholeShape && wholeShapeDragStartPoint != null && wholeShapeInitialVertices != null) {
+                                                val dens = density.toFloat()
+                                                val centerX = size.width / 2f
+                                                val centerY = size.height / 2f
+                                                val mapPxX = (tapOffset.x - currentMapOffset.x - centerX) / currentMapScale + centerX
+                                                val mapPxY = (tapOffset.y - currentMapOffset.y - centerY) / currentMapScale + centerY
+                                                val virtualX = mapPxX / dens
+                                                val virtualY = mapPxY / dens
+                                                val dx = virtualX - wholeShapeDragStartPoint!!.x
+                                                val dy = virtualY - wholeShapeDragStartPoint!!.y
+                                                
+                                                val newVertices = wholeShapeInitialVertices!!.map { PointF(it.x + dx, it.y + dy) }.toMutableList()
+                                                
+                                                if (isDrawingInnerWall && baselineBoundaryVertices != null && baselineBoundaryVertices.size >= 3) {
+                                                    val firstNode = wholeShapeInitialVertices!!.first()
+                                                    val lastNode = wholeShapeInitialVertices!!.last()
+                                                    
+                                                    fun slideSnappedNode(nodeIdx: Int, originalNode: PointF) {
+                                                        for (i in 0 until baselineBoundaryVertices.size) {
+                                                            val p1 = baselineBoundaryVertices[i]
+                                                            val p2 = baselineBoundaryVertices[(i+1)%baselineBoundaryVertices.size]
+                                                            val dist = com.example.lostfoundai.utils.BoundaryUtils.distanceToSegment(originalNode.x, originalNode.y, p1, p2)
+                                                            // If original node was snapped (dist < 5f), force the new node onto this segment
+                                                            if (dist < 5f) {
+                                                                newVertices[nodeIdx] = com.example.lostfoundai.utils.BoundaryUtils.projectPointOntoSegment(newVertices[nodeIdx].x, newVertices[nodeIdx].y, p1, p2)
+                                                                break
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    slideSnappedNode(0, firstNode)
+                                                    slideSnappedNode(newVertices.lastIndex, lastNode)
+                                                }
+                                                
+                                                dragPreviewVertices = newVertices
+                                                return@detect1FingerDrawGestures
+                                            }
+
+                                            if (activeDragStartPoint == null) return@detect1FingerDrawGestures
+                                            val dens = density.toFloat()
+                                            val centerX = size.width / 2f
+                                            val centerY = size.height / 2f
+                                            val mapPxX = (tapOffset.x - currentMapOffset.x - centerX) / currentMapScale + centerX
+                                            val mapPxY = (tapOffset.y - currentMapOffset.y - centerY) / currentMapScale + centerY
+                                            var virtualX = mapPxX / dens
+                                            var virtualY = mapPxY / dens
+                                            
+                                            val targetVertices = if (isDrawingBoundary) drawingVertices else innerWallVertices
+                                            
+                                            // Enforce orthogonal
+                                            val startP = activeDragStartPoint!!
+                                            val dx = kotlin.math.abs(virtualX - startP.x)
+                                            val dy = kotlin.math.abs(virtualY - startP.y)
+                                            if (dx > dy) {
+                                                virtualY = startP.y
+                                            } else {
+                                                virtualX = startP.x
+                                            }
+                                            var currentP = PointF(virtualX, virtualY)
+                                            
+                                            // 1. Anti-Crossing Check
+                                            var isInvalid = false
+                                            if (targetVertices.size >= 2) {
+                                                for (i in 0 until targetVertices.size - 1) {
+                                                    // Don't check against the segment we are directly extending from
+                                                    if (activeDragStartIdx == 0 && i == 0) continue
+                                                    if (activeDragStartIdx == targetVertices.lastIndex && i == targetVertices.size - 2) continue
+                                                    
+                                                    val p3 = targetVertices[i]
+                                                    val p4 = targetVertices[i+1]
+                                                    if (com.example.lostfoundai.utils.BoundaryUtils.lineIntersectsLine(startP, currentP, p3, p4)) {
+                                                        isInvalid = true
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // 2. L-shape Auto Completion (Boundary)
+                                            var lClosePos: List<PointF>? = null
+                                            if (isDrawingBoundary && targetVertices.size >= 3) {
+                                                val targetCloseNode = if (activeDragStartIdx == 0) targetVertices.last() else targetVertices.first()
+                                                val distToClose = kotlin.math.sqrt(((currentP.x - targetCloseNode.x) * (currentP.x - targetCloseNode.x) + (currentP.y - targetCloseNode.y) * (currentP.y - targetCloseNode.y)).toDouble()).toFloat()
+                                                
+                                                if (distToClose < 50f) {
+                                                    // Generate L-shape to targetCloseNode
+                                                    // Since current segment is startP -> currentP, the next must be currentP -> ... -> targetCloseNode
+                                                    // We can just set currentP to align with targetCloseNode on the non-moving axis
+                                                    if (startP.x == currentP.x) {
+                                                        // Dragging vertically, align Y with targetCloseNode
+                                                        currentP = PointF(startP.x, targetCloseNode.y)
+                                                        lClosePos = listOf(PointF(startP.x, targetCloseNode.y), targetCloseNode)
+                                                    } else {
+                                                        // Dragging horizontally, align X with targetCloseNode
+                                                        currentP = PointF(targetCloseNode.x, startP.y)
+                                                        lClosePos = listOf(PointF(targetCloseNode.x, startP.y), targetCloseNode)
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // 3. Boundary Snap (Inner Wall)
+                                            var snappedFlag = false
+                                            if (isDrawingInnerWall && boundaryVertices.size >= 2) {
+                                                var minSnapDist = 50f
+                                                var snapped = currentP
+                                                val isHoriz = startP.y == currentP.y
+                                                val rayDir = if (isHoriz) kotlin.math.sign(currentP.x - startP.x) else kotlin.math.sign(currentP.y - startP.y)
+                                                
+                                                if (rayDir != 0f) {
+                                                    for (i in boundaryVertices.indices) {
+                                                        val p1 = boundaryVertices[i]
+                                                        val p2 = boundaryVertices[(i + 1) % boundaryVertices.size]
+                                                        
+                                                        if (isHoriz) {
+                                                            if ((p1.y > currentP.y) != (p2.y > currentP.y)) {
+                                                                val intersectX = p1.x + (currentP.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y)
+                                                                val dist = kotlin.math.abs(intersectX - currentP.x)
+                                                                val dir = kotlin.math.sign(intersectX - startP.x)
+                                                                if (dist < minSnapDist && (dir == rayDir || kotlin.math.abs(intersectX - startP.x) < dist)) {
+                                                                    minSnapDist = dist
+                                                                    snapped = PointF(intersectX, currentP.y)
+                                                                    snappedFlag = true
+                                                                }
+                                                            }
+                                                        } else {
+                                                            if ((p1.x > currentP.x) != (p2.x > currentP.x)) {
+                                                                val intersectY = p1.y + (currentP.x - p1.x) * (p2.y - p1.y) / (p2.x - p1.x)
+                                                                val dist = kotlin.math.abs(intersectY - currentP.y)
+                                                                val dir = kotlin.math.sign(intersectY - startP.y)
+                                                                if (dist < minSnapDist && (dir == rayDir || kotlin.math.abs(intersectY - startP.y) < dist)) {
+                                                                    minSnapDist = dist
+                                                                    snapped = PointF(currentP.x, intersectY)
+                                                                    snappedFlag = true
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                currentP = snapped
+                                            }
+                                            
+                                            if (lClosePos != null && activeDragLClosePos == null) {
+                                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                            }
+                                            
+                                            activeDragCurrentPoint = currentP
+                                            activeDragIsInvalid = isInvalid
+                                            activeDragLClosePos = lClosePos
+                                            activeDragWasSnapped = snappedFlag
+                                        }
+                                    )
+                                }
+                            }
+                            .pointerInput(isDrawingBoundary, isSpecifyingLocation, isRecordingWalkPath, isDrawingInnerWall, drawingVertices, innerWallVertices, isEditing, mapObjects, innerWalls) {
+                                detectTapGestures(
+                                            onDoubleTap = {
+                                                if (isDrawingInnerWall) {
+                                                    onInnerWallComplete()
+                                                }
+                                            },
+                                            onTap = { tapOffset ->
+                                                val dens = density.toFloat()
+                                                val centerX = size.width / 2f
+                                                val centerY = size.height / 2f
+                                                val mapPxX = (tapOffset.x - currentMapOffset.x - centerX) / currentMapScale + centerX
+                                                val mapPxY = (tapOffset.y - currentMapOffset.y - centerY) / currentMapScale + centerY
+                                                val virtualX = mapPxX / dens
+                                                val virtualY = mapPxY / dens
+
+                                                if (isSpecifyingLocation || isRecordingWalkPath) {
+                                                    onCanvasTap(PointF(virtualX, virtualY))
+                                                } else if (isEditing && !isDrawingBoundary && innerWallVertices.isEmpty()) {
+                                                    var tappedWallIndex = -1
+                                                    for ((index, wall) in innerWalls.withIndex()) {
+                                                        for (i in 0 until wall.size - 1) {
+                                                            val p1 = wall[i]
+                                                            val p2 = wall[i+1]
+                                                            val l2 = (p1.x - p2.x)*(p1.x - p2.x) + (p1.y - p2.y)*(p1.y - p2.y)
+                                                            val t = if (l2 == 0f) 0f else Math.max(0f, Math.min(1f, ((virtualX - p1.x) * (p2.x - p1.x) + (virtualY - p1.y) * (p2.y - p1.y)) / l2))
+                                                            val projX = p1.x + t * (p2.x - p1.x)
+                                                            val projY = p1.y + t * (p2.y - p1.y)
+                                                            val dist = kotlin.math.sqrt(((virtualX - projX)*(virtualX - projX) + (virtualY - projY)*(virtualY - projY)).toDouble()).toFloat()
+                                                            if (dist < 20f) {
+                                                                tappedWallIndex = index
+                                                                break
+                                                            }
+                                                        }
+                                                        if (tappedWallIndex != -1) break
+                                                    }
+                                                    
+                                                    if (tappedWallIndex != -1) {
+                                                        onInnerWallTap(tappedWallIndex)
+                                                    } else {
+                                                        selectedObjectId = null
+                                                    }
+                                                } else if (!isEditing) {
+                                                    val tappedObj = mapObjects.find { obj ->
+                                                        val objW = obj.width * obj.scale
+                                                        val objH = obj.height * obj.scale
+                                                        virtualX >= obj.x && virtualX <= obj.x + objW &&
+                                                                virtualY >= obj.y && virtualY <= obj.y + objH
+                                                    }
+                                                    if (tappedObj != null) {
+                                                        onFurnitureTap(tappedObj)
+                                                    } else {
+                                                        selectedObjectId = null
+                                                    }
                                                 } else {
                                                     selectedObjectId = null
                                                 }
-                                            } else {
-                                                selectedObjectId = null
                                             }
-                                        }
-                                )
-                            }
+                                    )
+                                }
     ) {
         val density = LocalDensity.current.density
         val effectiveBoundary =
@@ -2242,10 +2810,13 @@ fun MapCanvas(
                                         translationY = mapOffset.y
                                 )
         ) {
-            if (gridEnabled) {
+            val gridAlpha by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (isDrawingBoundary || isDrawingInnerWall || isEditing) 1f else if (gridEnabled) 1f else 0f
+            )
+            if (gridAlpha > 0f) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val gridSpacing = 20f * density
-                    val gridColor = Color(0xFFDDDDDD)
+                    val gridColor = Color(0xFFDDDDDD).copy(alpha = gridAlpha)
 
                     // Calculate visible range in map space
                     // mapOffset is screen-space translation.
@@ -2308,39 +2879,99 @@ fun MapCanvas(
                     drawPath(path, color = Color.Black, style = Stroke(width = 2f * dens))
                 }
             }
-
-            // Drawing preview — show in-progress vertices and lines
-            // 【問題一修正】即時預覽：使用 dragPreviewVertices (拖曳中) 或 drawingVertices (平時)
-            val activePreviewVertices = dragPreviewVertices ?: drawingVertices
-            if (isDrawingBoundary && activePreviewVertices.isNotEmpty()) {
+            
+            // Inner Walls
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val dens = density
+                innerWalls.forEach { wall ->
+                    if (wall.size >= 2) {
+                        val path = Path()
+                        path.moveTo(wall[0].x * dens, wall[0].y * dens)
+                        for (i in 1 until wall.size) {
+                            path.lineTo(wall[i].x * dens, wall[i].y * dens)
+                        }
+                        drawPath(path, color = Color.Black, style = Stroke(width = 2f * dens))
+                    }
+                }
+            }
+            
+            // Drawing Inner Wall Preview
+            if (isDrawingInnerWall && innerWallVertices.isNotEmpty()) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val dens = density
-                    // Draw lines
                     val path = Path()
-                    path.moveTo(activePreviewVertices[0].x * dens, activePreviewVertices[0].y * dens)
-                    for (i in 1 until activePreviewVertices.size) {
-                        path.lineTo(activePreviewVertices[i].x * dens, activePreviewVertices[i].y * dens)
+                    path.moveTo(innerWallVertices[0].x * dens, innerWallVertices[0].y * dens)
+                    for (i in 1 until innerWallVertices.size) {
+                        path.lineTo(innerWallVertices[i].x * dens, innerWallVertices[i].y * dens)
                     }
-                    drawPath(
-                            path,
-                            color = Color.Red.copy(alpha = 0.8f),
-                            style = Stroke(width = 2f * dens)
-                    )
-                    // Draw dashed close line preview
-                    if (activePreviewVertices.size >= 3) {
+                    drawPath(path, color = Color.Blue.copy(alpha = 0.8f), style = Stroke(width = 2f * dens))
+                }
+            }
+
+            // Drawing preview — show in-progress vertices and lines
+            val targetPreview = if (isDrawingBoundary) (dragPreviewVertices ?: drawingVertices) else if (isDrawingInnerWall) innerWallVertices else emptyList()
+            if (targetPreview.isNotEmpty() || activeDragStartPoint != null) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val dens = density
+                    // Draw confirmed lines
+                    if (targetPreview.isNotEmpty()) {
+                        val path = Path()
+                        path.moveTo(targetPreview[0].x * dens, targetPreview[0].y * dens)
+                        for (i in 1 until targetPreview.size) {
+                            path.lineTo(targetPreview[i].x * dens, targetPreview[i].y * dens)
+                        }
+                        drawPath(
+                                path,
+                                color = if (isDrawingBoundary) Color.Red.copy(alpha = 0.8f) else Color.Blue.copy(alpha = 0.8f),
+                                style = Stroke(width = 2f * dens)
+                        )
+                        
+                        // Draw highlights on head and tail if not currently dragging
+                        if (activeDragStartPoint == null) {
+                            val head = targetPreview.first()
+                            val tail = targetPreview.last()
+                            drawCircle(Color(0xFF4CAF50), radius = 8f * dens, center = Offset(head.x * dens, head.y * dens), style = Stroke(width = 2f * dens))
+                            if (targetPreview.size > 1) {
+                                drawCircle(Color(0xFF4CAF50), radius = 8f * dens, center = Offset(tail.x * dens, tail.y * dens), style = Stroke(width = 2f * dens))
+                            }
+                        }
+                    }
+                    
+                    // Draw dashed close line preview for boundary
+                    if (isDrawingBoundary && targetPreview.size >= 3 && activeDragStartPoint == null) {
                         drawLine(
                                 color = Color.Red.copy(alpha = 0.4f),
-                                start =
-                                        Offset(
-                                                activePreviewVertices.last().x * dens,
-                                                activePreviewVertices.last().y * dens
-                                        ),
-                                end =
-                                        Offset(
-                                                activePreviewVertices[0].x * dens,
-                                                activePreviewVertices[0].y * dens
-                                        ),
+                                start = Offset(targetPreview.last().x * dens, targetPreview.last().y * dens),
+                                end = Offset(targetPreview[0].x * dens, targetPreview[0].y * dens),
                                 strokeWidth = 1.5f * dens
+                        )
+                    }
+                    
+                    // Draw active drag line
+                    if (activeDragStartPoint != null && activeDragCurrentPoint != null) {
+                        val sp = activeDragStartPoint!!
+                        val ep = activeDragCurrentPoint!!
+                        drawLine(
+                            color = if (activeDragIsInvalid) Color.Red else Color(0xFF2196F3),
+                            start = Offset(sp.x * dens, sp.y * dens),
+                            end = Offset(ep.x * dens, ep.y * dens),
+                            strokeWidth = 3f * dens
+                        )
+                        
+                        // Draw live length text
+                        val paint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.DKGRAY
+                            textSize = 14f * dens
+                            textAlign = android.graphics.Paint.Align.CENTER
+                        }
+                        val dist = kotlin.math.sqrt(((ep.x - sp.x) * (ep.x - sp.x) + (ep.y - sp.y) * (ep.y - sp.y)).toDouble())
+                        val midX = (sp.x + ep.x) / 2f
+                        val midY = (sp.y + ep.y) / 2f
+                        drawContext.canvas.nativeCanvas.drawText(
+                            String.format("%.1fm", dist / 100.0), // Assuming 100dp = 1m for display purposes
+                            midX * dens,
+                            (midY - 10f) * dens,
+                            paint
                         )
                     }
                 }
@@ -2378,96 +3009,147 @@ fun MapCanvas(
                 targetVertices.forEachIndexed { idx, v ->
                     val handlePxX = v.x * dens
                     val handlePxY = v.y * dens
-                    // Render each vertex as a draggable Box overlay
-                    // 【問題二修正】編輯點置中：扣除半徑轉換為像素 (20dp * dens)
-                    Box(
-                        modifier = Modifier
-                            .offset {
-                                androidx.compose.ui.unit.IntOffset(
-                                    (handlePxX - 12f * dens).toInt(),
-                                    (handlePxY - 12f * dens).toInt()
-                                )
-                            }
-                            .size(24.dp)
-                            .background(
-                                if (baselineBoundaryVertices == null && idx == targetVertices.lastIndex) Color(0xFFFF5722)
+                    val isEndNode = baselineBoundaryVertices == null && (idx == 0 || idx == targetVertices.lastIndex)
+                    var virtualMapX by androidx.compose.runtime.remember(idx, currentDrawingVertices.getOrNull(idx)) { androidx.compose.runtime.mutableFloatStateOf(currentDrawingVertices.getOrNull(idx)?.x ?: 0f) }
+                    var virtualMapY by androidx.compose.runtime.remember(idx, currentDrawingVertices.getOrNull(idx)) { androidx.compose.runtime.mutableFloatStateOf(currentDrawingVertices.getOrNull(idx)?.y ?: 0f) }
+
+                    ExtrudeHandleView(
+                        x = handlePxX,
+                        y = handlePxY,
+                        dens = dens,
+                        isEndNode = isEndNode,
+                        isSnapped = false,
+                        color = if (baselineBoundaryVertices == null && idx == targetVertices.lastIndex) Color(0xFFFF5722)
                                 else if (baselineBoundaryVertices != null) Color(0xFF1E88E5)
                                 else Color.Red,
-                                shape = androidx.compose.foundation.shape.CircleShape
-                            )
-                            .pointerInput(idx) {
-                                var virtualMapX = 0f
-                                var virtualMapY = 0f
-                                detectDragGestures(
-                                    onDragStart = {
-                                        val startPos = currentDrawingVertices[idx]
-                                        virtualMapX = startPos.x
-                                        virtualMapY = startPos.y
-                                        isDraggingHandle = true
-                                        dragPreviewVertices = currentDrawingVertices
-                                    },
-                                    onDragEnd = {
-                                        isDraggingHandle = false
-                                        if (baselineBoundaryVertices != null) {
-                                            // 微調模式：承認修改到 drawingVertices
-                                            onBoundaryVertexMove(idx, PointF(virtualMapX, virtualMapY))
-                                        } else {
-                                            // 繪製模式：承認預覽修改
-                                            dragPreviewVertices?.let { preview ->
-                                                if (idx < preview.size) {
-                                                    onDrawingVertexMove(idx, preview[idx])
-                                                }
-                                            }
-                                        }
-                                        // isDraggingHandle=false 觸發 LaunchedEffect 根據新的 drawingVertices 更新預覽
-                                    },
-                                    onDragCancel = {
-                                        isDraggingHandle = false
-                                        dragPreviewVertices = currentDrawingVertices // 回復預覽至首次狀態
-                                    }
-                                ) { change, dragAmount ->
-                                    change.consume()
-                                    // dragAmount is in raw screen pixels. Convert to map dp:
-                                    virtualMapX += dragAmount.x / dens
-                                    virtualMapY += dragAmount.y / dens
+                        onCenterDragStart = {
+                            val startPos = currentDrawingVertices[idx]
+                            virtualMapX = startPos.x
+                            virtualMapY = startPos.y
+                            isDraggingHandle = true
+                            dragPreviewVertices = currentDrawingVertices
+                        },
+                        onCenterDrag = { dragAmount ->
+                            virtualMapX += dragAmount.x / dens
+                            virtualMapY += dragAmount.y / dens
 
-                                    if (baselineBoundaryVertices == null) {
-                                        // For drawing mode, update directly as before (instant snap)
-                                        val snapped = if (idx > 0) {
-                                            val prev = currentDrawingVertices[idx - 1]
-                                            val ddx = kotlin.math.abs(virtualMapX - prev.x)
-                                            val ddy = kotlin.math.abs(virtualMapY - prev.y)
-                                            if (ddx > ddy) PointF(virtualMapX, prev.y)
-                                            else PointF(prev.x, virtualMapY)
-                                        } else PointF(virtualMapX, virtualMapY)
-                                        
-                                        val verts = currentDrawingVertices.toMutableList()
-                                        if (idx < verts.size) verts[idx] = snapped
-                                        dragPreviewVertices = verts
-                                    } else {
-                                        // For Canva style editing, compute the orthogonal changes on the preview state
-                                        val verts = currentDrawingVertices.toMutableList()
-                                        val old = verts[idx]
-                                        val newPos = PointF(virtualMapX, virtualMapY)
-                                        verts[idx] = newPos
+                            if (baselineBoundaryVertices == null) {
+                                val snapped = if (idx > 0) {
+                                    val prev = currentDrawingVertices[idx - 1]
+                                    val ddx = kotlin.math.abs(virtualMapX - prev.x)
+                                    val ddy = kotlin.math.abs(virtualMapY - prev.y)
+                                    if (ddx > ddy) PointF(virtualMapX, prev.y)
+                                    else PointF(prev.x, virtualMapY)
+                                } else PointF(virtualMapX, virtualMapY)
+                                
+                                val verts = currentDrawingVertices.toMutableList()
+                                if (idx < verts.size) verts[idx] = snapped
+                                dragPreviewVertices = verts
+                            } else {
+                                val verts = currentDrawingVertices.toMutableList()
+                                val old = verts[idx]
+                                val newPos = PointF(virtualMapX, virtualMapY)
+                                verts[idx] = newPos
 
-                                        val prevIdx = (idx - 1 + verts.size) % verts.size
-                                        val nextIdx = (idx + 1) % verts.size
+                                val prevIdx = (idx - 1 + verts.size) % verts.size
+                                val nextIdx = (idx + 1) % verts.size
 
-                                        if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
-                                        else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
+                                if (verts[prevIdx].y == old.y) verts[prevIdx] = PointF(verts[prevIdx].x, newPos.y)
+                                else verts[prevIdx] = PointF(newPos.x, verts[prevIdx].y)
 
-                                        if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
-                                        else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
+                                if (verts[nextIdx].x == old.x) verts[nextIdx] = PointF(newPos.x, verts[nextIdx].y)
+                                else verts[nextIdx] = PointF(verts[nextIdx].x, newPos.y)
 
-                                        dragPreviewVertices = verts
+                                dragPreviewVertices = verts
+                            }
+                        },
+                        onCenterDragEnd = {
+                            isDraggingHandle = false
+                            if (baselineBoundaryVertices != null) {
+                                dragPreviewVertices?.let { preview ->
+                                    if (idx < preview.size) onBoundaryVertexMove(idx, PointF(virtualMapX, virtualMapY))
+                                }
+                            } else {
+                                dragPreviewVertices?.let { preview ->
+                                    if (idx < preview.size) onDrawingVertexMove(idx, preview[idx])
+                                }
+                            }
+                        },
+                        onExtrudeDragStart = {
+                            activeDragStartIdx = idx
+                            activeDragStartPoint = targetVertices[idx]
+                            activeDragCurrentPoint = targetVertices[idx]
+                        },
+                        onExtrudeDrag = { dragAmount ->
+                            if (activeDragStartPoint == null || activeDragCurrentPoint == null) return@ExtrudeHandleView
+                            
+                            val startP = activeDragStartPoint!!
+                            var vx = activeDragCurrentPoint!!.x + dragAmount.x / dens
+                            var vy = activeDragCurrentPoint!!.y + dragAmount.y / dens
+                            
+                            val dx = kotlin.math.abs(vx - startP.x)
+                            val dy = kotlin.math.abs(vy - startP.y)
+                            if (dx > dy) vy = startP.y else vx = startP.x
+                            var currentP = PointF(vx, vy)
+                            
+                            var isInvalid = false
+                            if (targetVertices.size >= 2) {
+                                for (i in 0 until targetVertices.size - 1) {
+                                    if (activeDragStartIdx == 0 && i == 0) continue
+                                    if (activeDragStartIdx == targetVertices.lastIndex && i == targetVertices.size - 2) continue
+                                    val p3 = targetVertices[i]
+                                    val p4 = targetVertices[i+1]
+                                    if (com.example.lostfoundai.utils.BoundaryUtils.lineIntersectsLine(startP, currentP, p3, p4)) {
+                                        isInvalid = true
+                                        break
                                     }
                                 }
                             }
+                            
+                            var lClosePos: List<PointF>? = null
+                            if (targetVertices.size >= 3) {
+                                val targetCloseNode = if (activeDragStartIdx == 0) targetVertices.last() else targetVertices.first()
+                                val distToClose = kotlin.math.sqrt(((currentP.x - targetCloseNode.x) * (currentP.x - targetCloseNode.x) + (currentP.y - targetCloseNode.y) * (currentP.y - targetCloseNode.y)).toDouble()).toFloat()
+                                if (distToClose < 50f) {
+                                    if (startP.x == currentP.x) {
+                                        currentP = PointF(startP.x, targetCloseNode.y)
+                                        lClosePos = listOf(PointF(startP.x, targetCloseNode.y), targetCloseNode)
+                                    } else {
+                                        currentP = PointF(targetCloseNode.x, startP.y)
+                                        lClosePos = listOf(PointF(targetCloseNode.x, startP.y), targetCloseNode)
+                                    }
+                                }
+                            }
+                            
+                            activeDragCurrentPoint = currentP
+                            activeDragIsInvalid = isInvalid
+                            activeDragLClosePos = lClosePos
+                        },
+                        onExtrudeDragEnd = {
+                            var wasClosed = false
+                            if (activeDragStartPoint != null && activeDragCurrentPoint != null && !activeDragIsInvalid) {
+                                val prepend = activeDragStartIdx == 0
+                                onDrawingVertexAdd(activeDragCurrentPoint!!, prepend)
+                                if (activeDragLClosePos != null) {
+                                    if (prepend) {
+                                        activeDragLClosePos!!.reversed().forEach { p -> onDrawingVertexAdd(p, true) }
+                                    } else {
+                                        activeDragLClosePos!!.forEach { p -> onDrawingVertexAdd(p, false) }
+                                    }
+                                    wasClosed = true
+                                    haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                }
+                            }
+                            activeDragStartPoint = null
+                            activeDragCurrentPoint = null
+                            activeDragIsInvalid = false
+                            activeDragLClosePos = null
+                            activeDragStartIdx = null
+                        }
                     )
                 }
 
-                // 微調模式（有基線）：顯示線段中點脇囊
+            // 微調模式（有基線）：顯示線段中點脇囊
                 if (baselineBoundaryVertices != null && targetVertices.size >= 3) {
                     for (idx in targetVertices.indices) {
                         val p1 = targetVertices[idx]
@@ -2541,12 +3223,301 @@ fun MapCanvas(
                 }
             }
 
+            // Inner Wall Drawing mode: draggable handles on top of the canvas
+            if (isDrawingInnerWall) {
+                val dens = density
+                val targetVertices = dragPreviewVertices ?: innerWallVertices
+                
+                targetVertices.forEachIndexed { idx, v ->
+                    val handlePxX = v.x * dens
+                    val handlePxY = v.y * dens
+                    val isEndNode = idx == 0 || idx == targetVertices.lastIndex
+                    var isOnBoundary = false
+                    if (isEndNode && effectiveBoundary.size >= 2) {
+                        for (i in effectiveBoundary.indices) {
+                            val p1 = effectiveBoundary[i]
+                            val p2 = effectiveBoundary[(i + 1) % effectiveBoundary.size]
+                            val minX = kotlin.math.min(p1.x, p2.x) - 1f
+                            val maxX = kotlin.math.max(p1.x, p2.x) + 1f
+                            val minY = kotlin.math.min(p1.y, p2.y) - 1f
+                            val maxY = kotlin.math.max(p1.y, p2.y) + 1f
+                            if (v.x in minX..maxX && v.y in minY..maxY) {
+                                if (p1.x == p2.x && kotlin.math.abs(v.x - p1.x) < 1f) isOnBoundary = true
+                                if (p1.y == p2.y && kotlin.math.abs(v.y - p1.y) < 1f) isOnBoundary = true
+                            }
+                        }
+                    }
+                    var virtualMapX by androidx.compose.runtime.remember(idx, innerWallVertices.getOrNull(idx)) { androidx.compose.runtime.mutableFloatStateOf(innerWallVertices.getOrNull(idx)?.x ?: 0f) }
+                    var virtualMapY by androidx.compose.runtime.remember(idx, innerWallVertices.getOrNull(idx)) { androidx.compose.runtime.mutableFloatStateOf(innerWallVertices.getOrNull(idx)?.y ?: 0f) }
+                    
+                    ExtrudeHandleView(
+                        x = handlePxX,
+                        y = handlePxY,
+                        dens = dens,
+                        isEndNode = isEndNode,
+                        isSnapped = isOnBoundary,
+                        color = if (idx == targetVertices.lastIndex) Color(0xFFFF5722) else Color.Red,
+                        onCenterDragStart = {
+                            val startPos = innerWallVertices[idx]
+                            virtualMapX = startPos.x
+                            virtualMapY = startPos.y
+                            isDraggingHandle = true
+                            dragPreviewVertices = innerWallVertices
+                        },
+                        onCenterDrag = { dragAmount ->
+                            virtualMapX += dragAmount.x / dens
+                            virtualMapY += dragAmount.y / dens
+
+                            var snapped = PointF(virtualMapX, virtualMapY)
+                            // 1D Constraint if on boundary
+                            if (isEndNode && effectiveBoundary.size >= 2) {
+                                val startPos = innerWallVertices[idx]
+                                var isCurrentlyOnBoundary = false
+                                var boundP1: PointF? = null
+                                var boundP2: PointF? = null
+                                
+                                for (i in effectiveBoundary.indices) {
+                                    val p1 = effectiveBoundary[i]
+                                    val p2 = effectiveBoundary[(i + 1) % effectiveBoundary.size]
+                                    val minX = kotlin.math.min(p1.x, p2.x) - 1f
+                                    val maxX = kotlin.math.max(p1.x, p2.x) + 1f
+                                    val minY = kotlin.math.min(p1.y, p2.y) - 1f
+                                    val maxY = kotlin.math.max(p1.y, p2.y) + 1f
+                                    if (startPos.x in minX..maxX && startPos.y in minY..maxY) {
+                                        if (p1.x == p2.x && kotlin.math.abs(startPos.x - p1.x) < 1f) {
+                                            isCurrentlyOnBoundary = true; boundP1 = p1; boundP2 = p2; break
+                                        }
+                                        if (p1.y == p2.y && kotlin.math.abs(startPos.y - p1.y) < 1f) {
+                                            isCurrentlyOnBoundary = true; boundP1 = p1; boundP2 = p2; break
+                                        }
+                                    }
+                                }
+                                
+                                if (isCurrentlyOnBoundary && boundP1 != null && boundP2 != null) {
+                                    // Calculate tear-off distance
+                                    val distToLine = if (boundP1.x == boundP2.x) kotlin.math.abs(virtualMapX - boundP1.x) else kotlin.math.abs(virtualMapY - boundP1.y)
+                                    if (distToLine < 30f) { // Tear-off threshold
+                                        if (boundP1.x == boundP2.x) {
+                                            val minY = kotlin.math.min(boundP1.y, boundP2.y)
+                                            val maxY = kotlin.math.max(boundP1.y, boundP2.y)
+                                            snapped = PointF(boundP1.x, virtualMapY.coerceIn(minY, maxY))
+                                        } else {
+                                            val minX = kotlin.math.min(boundP1.x, boundP2.x)
+                                            val maxX = kotlin.math.max(boundP1.x, boundP2.x)
+                                            snapped = PointF(virtualMapX.coerceIn(minX, maxX), boundP1.y)
+                                        }
+                                    }
+                                }
+                            } else if (idx > 0 && idx < innerWallVertices.lastIndex) {
+                                val prev = innerWallVertices[idx - 1]
+                                val ddx = kotlin.math.abs(virtualMapX - prev.x)
+                                val ddy = kotlin.math.abs(virtualMapY - prev.y)
+                                snapped = if (ddx > ddy) PointF(virtualMapX, prev.y) else PointF(prev.x, virtualMapY)
+                            }
+                            
+                            val verts = innerWallVertices.toMutableList()
+                            if (idx < verts.size) verts[idx] = snapped
+                            dragPreviewVertices = verts
+                        },
+                        onCenterDragEnd = {
+                            isDraggingHandle = false
+                            dragPreviewVertices?.let { preview ->
+                                if (idx < preview.size) onInnerWallVertexMove(idx, preview[idx])
+                            }
+                        },
+                        onExtrudeDragStart = {
+                            activeDragStartIdx = idx
+                            activeDragStartPoint = targetVertices[idx]
+                            activeDragCurrentPoint = targetVertices[idx]
+                        },
+                        onExtrudeDrag = { dragAmount ->
+                            if (activeDragStartPoint == null || activeDragCurrentPoint == null) return@ExtrudeHandleView
+                            
+                            val startP = activeDragStartPoint!!
+                            var vx = activeDragCurrentPoint!!.x + dragAmount.x / dens
+                            var vy = activeDragCurrentPoint!!.y + dragAmount.y / dens
+                            
+                            val dx = kotlin.math.abs(vx - startP.x)
+                            val dy = kotlin.math.abs(vy - startP.y)
+                            if (dx > dy) vy = startP.y else vx = startP.x
+                            var currentP = PointF(vx, vy)
+                            
+                            // Check boundary snap
+                            var wasSnappedToBoundary = false
+                            if (effectiveBoundary.size >= 2) {
+                                for (i in effectiveBoundary.indices) {
+                                    val p1 = effectiveBoundary[i]
+                                    val p2 = effectiveBoundary[(i + 1) % effectiveBoundary.size]
+                                    
+                                    val minX = kotlin.math.min(p1.x, p2.x) - 1f
+                                    val maxX = kotlin.math.max(p1.x, p2.x) + 1f
+                                    val minY = kotlin.math.min(p1.y, p2.y) - 1f
+                                    val maxY = kotlin.math.max(p1.y, p2.y) + 1f
+                                    
+                                    // Distance to segment
+                                    val dist = if (p1.x == p2.x) kotlin.math.abs(currentP.x - p1.x) else kotlin.math.abs(currentP.y - p1.y)
+                                    if (dist < 50f) { // Snap radius
+                                        val withinSegment = if (p1.x == p2.x) currentP.y in minY..maxY else currentP.x in minX..maxX
+                                        if (withinSegment) {
+                                            if (p1.x == p2.x) currentP = PointF(p1.x, currentP.y)
+                                            else currentP = PointF(currentP.x, p1.y)
+                                            wasSnappedToBoundary = true
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            activeDragCurrentPoint = currentP
+                            activeDragWasSnapped = wasSnappedToBoundary
+                        },
+                        onExtrudeDragEnd = {
+                            var wasClosed = false
+                            if (activeDragStartPoint != null && activeDragCurrentPoint != null && !activeDragIsInvalid) {
+                                val prepend = activeDragStartIdx == 0
+                                onDrawingVertexAdd(activeDragCurrentPoint!!, prepend)
+                                if (activeDragWasSnapped) wasClosed = true
+                            }
+                            activeDragStartPoint = null
+                            activeDragCurrentPoint = null
+                            activeDragIsInvalid = false
+                            activeDragStartIdx = null
+                            activeDragWasSnapped = false
+                            
+                            if (wasClosed) {
+                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                // Inner wall snaps hide arrows but stay editable until Done button.
+                            }
+                        }
+                    )
+                }
+            }
+
+            // Walk Path Recording mode: draggable handles on top of the canvas
+            if (isRecordingWalkPath) {
+                val dens = density
+                walkPath.forEachIndexed { idx, v ->
+                    val handlePxX = v.x * dens
+                    val handlePxY = v.y * dens
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                androidx.compose.ui.unit.IntOffset(
+                                    (handlePxX - 12f * dens).toInt(),
+                                    (handlePxY - 12f * dens).toInt()
+                                )
+                            }
+                            .size(24.dp)
+                            .background(Color(0xFFFFD600), shape = androidx.compose.foundation.shape.CircleShape)
+                            .pointerInput(idx) {
+                                var virtualMapX = 0f
+                                var virtualMapY = 0f
+                                detectDragGestures(
+                                    onDragStart = {
+                                        val startPos = currentWalkPath[idx]
+                                        virtualMapX = startPos.x
+                                        virtualMapY = startPos.y
+                                    },
+                                    onDragEnd = { /* no-op */ }
+                                ) { change, dragAmount ->
+                                    change.consume()
+                                    virtualMapX += dragAmount.x / dens
+                                    virtualMapY += dragAmount.y / dens
+                                    onWalkPathPointMove(idx, PointF(virtualMapX, virtualMapY))
+                                }
+                            }
+                    )
+                }
+            }
+
             val isObjectsInteractive = isEditing && !isDrawingBoundary && !isRecordingWalkPath
-            mapObjects.forEach { obj ->
+            val sortedObjects = mapObjects.sortedBy {
+                if (it.type == MapObjectType.WINDOW || it.type == MapObjectType.DOOR_LEFT || it.type == MapObjectType.DOOR_RIGHT) 1 else 0
+            }
+            sortedObjects.forEach { obj ->
+                val forceSnapToBoundary = { currentObj: MapObject ->
+                    val allWallSegments = mutableListOf<Pair<PointF, PointF>>()
+                    if (effectiveBoundary.size >= 2) {
+                        for (i in effectiveBoundary.indices) {
+                            allWallSegments.add(effectiveBoundary[i] to effectiveBoundary[(i + 1) % effectiveBoundary.size])
+                        }
+                    }
+                    innerWalls.forEach { wall ->
+                        for (i in 0 until wall.size - 1) {
+                            allWallSegments.add(wall[i] to wall[i + 1])
+                        }
+                    }
+                    if (allWallSegments.isNotEmpty()) {
+                        val objWidth = currentObj.width * currentObj.scale
+                        val objHeight = currentObj.height * currentObj.scale
+                        val cx = currentObj.x + objWidth / 2f
+                        val cy = currentObj.y + objHeight / 2f
+                        var bestDistSq = Float.MAX_VALUE
+                        var bestPos = PointF(currentObj.x, currentObj.y)
+                        var bestRot = currentObj.rotation
+                        var bestWidth = currentObj.width
+                        var bestHeight = currentObj.height
+                        for ((p1, p2) in allWallSegments) {
+                            val dx = p2.x - p1.x
+                            val dy = p2.y - p1.y
+                            val lenSq = dx*dx + dy*dy
+                            if (lenSq == 0f) continue
+                            val len = kotlin.math.sqrt(lenSq.toDouble()).toFloat()
+                            val t = ((cx - p1.x)*dx + (cy - p1.y)*dy) / lenSq
+                            val ct = t.coerceIn(0f, 1f)
+                            val nx = p1.x + ct * dx
+                            val ny = p1.y + ct * dy
+                            val distSq = (cx - nx)*(cx - nx) + (cy - ny)*(cy - ny)
+                            if (distSq < bestDistSq) {
+                                bestDistSq = distSq
+                                if (currentObj.type == MapObjectType.WINDOW) {
+                                    bestRot = (kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat())
+                                    val rem = bestRot % 180f
+                                    val isOrthogonalSwap = (kotlin.math.abs(rem) == 90f || kotlin.math.abs(rem) == 270f)
+                                    val defaultDims = currentObj.type.getDefaultDimensions()
+                                    if (isOrthogonalSwap) {
+                                        bestWidth = defaultDims.second
+                                        bestHeight = defaultDims.first
+                                    } else {
+                                        bestWidth = defaultDims.first
+                                        bestHeight = defaultDims.second
+                                    }
+                                    bestPos = PointF(nx - (bestWidth * currentObj.scale) / 2f, ny - (bestHeight * currentObj.scale) / 2f)
+                                } else {
+                                    val N = PointF(-dy/len, dx/len)
+                                    val dot = (cx - nx) * N.x + (cy - ny) * N.y
+                                    val usePosNormal = dot > 0
+                                    
+                                    bestRot = if (usePosNormal) kotlin.math.atan2(-dy, -dx) * 180f / kotlin.math.PI.toFloat() else kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat()
+                                    val rem = bestRot % 180f
+                                    val isOrthogonalSwap = (kotlin.math.abs(rem) == 90f || kotlin.math.abs(rem) == 270f)
+                                    val defaultDims = currentObj.type.getDefaultDimensions()
+                                    if (isOrthogonalSwap) {
+                                        bestWidth = defaultDims.second
+                                        bestHeight = defaultDims.first
+                                    } else {
+                                        bestWidth = defaultDims.first
+                                        bestHeight = defaultDims.second
+                                    }
+                                    
+                                    val scaledWidth = bestWidth * currentObj.scale
+                                    val scaledHeight = bestHeight * currentObj.scale
+                                    
+                                    val finalCx = if (usePosNormal) nx + N.x * scaledHeight / 2f else nx - N.x * scaledHeight / 2f
+                                    val finalCy = if (usePosNormal) ny + N.y * scaledHeight / 2f else ny - N.y * scaledHeight / 2f
+                                    bestPos = PointF(finalCx - scaledWidth / 2f, finalCy - scaledHeight / 2f)
+                                }
+                            }
+                        }
+                        onObjectUpdate(currentObj.copy(x = bestPos.x, y = bestPos.y, rotation = bestRot, width = bestWidth, height = bestHeight))
+                    }
+                }
+
                 MapObjectView(
                         obj = obj,
                         isInteractive = isObjectsInteractive,
                         isSelected = (selectedObjectId == obj.id),
+                        mapScale = mapScale,
                         onClick = { if (isObjectsInteractive) selectedObjectId = obj.id },
                         onDelete = {
                             onDeleteObject(obj.id)
@@ -2562,8 +3533,18 @@ fun MapCanvas(
                             val idealY = obj.y + (vDy / density)
 
                             fun isPosValid(px: Float, py: Float): Boolean {
-                                if (!BoundaryUtils.rectInPolygon(px, py, objWidth, objHeight, effectiveBoundary))
-                                    return false
+                                val isBoundaryObject = obj.type == MapObjectType.WINDOW || obj.type == MapObjectType.DOOR_LEFT || obj.type == MapObjectType.DOOR_RIGHT
+                                if (!isBoundaryObject) {
+                                    if (!BoundaryUtils.rectInPolygon(px, py, objWidth, objHeight, effectiveBoundary)) return false
+                                    val intersectsInnerWall = innerWalls.any { wall ->
+                                        (0 until wall.size - 1).any { i ->
+                                            BoundaryUtils.rectIntersectsLine(px, py, objWidth, objHeight, wall[i], wall[i+1])
+                                        }
+                                    }
+                                    if (intersectsInnerWall) return false
+                                } else {
+                                    return true
+                                }
                                 return mapObjects.none { other ->
                                     val otherW = other.width * other.scale
                                     val otherH = other.height * other.scale
@@ -2647,10 +3628,98 @@ fun MapCanvas(
                             }
 
                             if (finalX != obj.x || finalY != obj.y) {
-                                onObjectMove(obj.id, finalX - obj.x, finalY - obj.y)
+                                val isBoundaryObject = obj.type == MapObjectType.WINDOW || obj.type == MapObjectType.DOOR_LEFT || obj.type == MapObjectType.DOOR_RIGHT
+                                val allWallSegments = mutableListOf<Pair<PointF, PointF>>()
+                                if (effectiveBoundary.size >= 2) {
+                                    for (i in effectiveBoundary.indices) {
+                                        allWallSegments.add(effectiveBoundary[i] to effectiveBoundary[(i + 1) % effectiveBoundary.size])
+                                    }
+                                }
+                                innerWalls.forEach { wall ->
+                                    for (i in 0 until wall.size - 1) {
+                                        allWallSegments.add(wall[i] to wall[i + 1])
+                                    }
+                                }
+                                
+                                if (isBoundaryObject && allWallSegments.isNotEmpty()) {
+                                    val cx = finalX + objWidth / 2f
+                                    val cy = finalY + objHeight / 2f
+                                    var bestDistSq = Float.MAX_VALUE
+                                    var bestPos = PointF(finalX, finalY)
+                                    var bestRot = obj.rotation
+                                    var bestWidth = obj.width
+                                    var bestHeight = obj.height
+                                    for ((p1, p2) in allWallSegments) {
+                                        val dx = p2.x - p1.x
+                                        val dy = p2.y - p1.y
+                                        val lenSq = dx*dx + dy*dy
+                                        if (lenSq == 0f) continue
+                                        val len = kotlin.math.sqrt(lenSq.toDouble()).toFloat()
+                                        val t = ((cx - p1.x)*dx + (cy - p1.y)*dy) / lenSq
+                                        val ct = t.coerceIn(0f, 1f)
+                                        val nx = p1.x + ct * dx
+                                        val ny = p1.y + ct * dy
+                                        val distSq = (cx - nx)*(cx - nx) + (cy - ny)*(cy - ny)
+                                        if (distSq < bestDistSq) {
+                                            bestDistSq = distSq
+                                            if (obj.type == MapObjectType.WINDOW) {
+                                                bestRot = (kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat())
+                                                val rem = bestRot % 180f
+                                                val isOrthogonalSwap = (kotlin.math.abs(rem) == 90f || kotlin.math.abs(rem) == 270f)
+                                                val defaultDims = obj.type.getDefaultDimensions()
+                                                if (isOrthogonalSwap) {
+                                                    bestWidth = defaultDims.second
+                                                    bestHeight = defaultDims.first
+                                                } else {
+                                                    bestWidth = defaultDims.first
+                                                    bestHeight = defaultDims.second
+                                                }
+                                                bestPos = PointF(nx - (bestWidth * obj.scale) / 2f, ny - (bestHeight * obj.scale) / 2f)
+                                            } else {
+                                                val N = PointF(-dy/len, dx/len)
+                                                val dot = (cx - nx) * N.x + (cy - ny) * N.y
+                                                val usePosNormal = dot > 0
+                                                
+                                                bestRot = if (usePosNormal) kotlin.math.atan2(-dy, -dx) * 180f / kotlin.math.PI.toFloat() else kotlin.math.atan2(dy, dx) * 180f / kotlin.math.PI.toFloat()
+                                                val rem = bestRot % 180f
+                                                val isOrthogonalSwap = (kotlin.math.abs(rem) == 90f || kotlin.math.abs(rem) == 270f)
+                                                val defaultDims = obj.type.getDefaultDimensions()
+                                                if (isOrthogonalSwap) {
+                                                    bestWidth = defaultDims.second
+                                                    bestHeight = defaultDims.first
+                                                } else {
+                                                    bestWidth = defaultDims.first
+                                                    bestHeight = defaultDims.second
+                                                }
+                                                
+                                                val scaledWidth = bestWidth * obj.scale
+                                                val scaledHeight = bestHeight * obj.scale
+                                                
+                                                val finalCx = if (usePosNormal) nx + N.x * scaledHeight / 2f else nx - N.x * scaledHeight / 2f
+                                                val finalCy = if (usePosNormal) ny + N.y * scaledHeight / 2f else ny - N.y * scaledHeight / 2f
+                                                bestPos = PointF(finalCx - scaledWidth / 2f, finalCy - scaledHeight / 2f)
+                                            }
+                                        }
+                                    }
+                                    if (bestDistSq < 10000f) {
+                                        onObjectUpdate(obj.copy(x = bestPos.x, y = bestPos.y, rotation = bestRot, width = bestWidth, height = bestHeight))
+                                    } else {
+                                        onObjectMove(obj.id, finalX - obj.x, finalY - obj.y)
+                                    }
+                                } else {
+                                    onObjectMove(obj.id, finalX - obj.x, finalY - obj.y)
+                                }
                             }
                         },
-                        onDragEnd = { /* No-op */}
+                        onDragEnd = {
+                            val currentObj = mapObjects.find { it.id == obj.id }
+                            if (currentObj != null) {
+                                val isBoundaryObject = currentObj.type == MapObjectType.WINDOW || currentObj.type == MapObjectType.DOOR_LEFT || currentObj.type == MapObjectType.DOOR_RIGHT
+                                if (isBoundaryObject) {
+                                    forceSnapToBoundary(currentObj)
+                                }
+                            }
+                        }
                 )
             }
 
@@ -2805,7 +3874,21 @@ fun MapObjectVisuals(
                 MapObjectType.TABLE_S -> R.drawable.table_s
                 MapObjectType.TABLE_L_SHAPE -> R.drawable.table_l_shape
                 MapObjectType.WINDOW -> R.drawable.window
-                else -> null
+                MapObjectType.BOOKSHELF -> R.drawable.bookshelf
+                MapObjectType.DINING_CHAIR -> R.drawable.dining_chair
+                MapObjectType.KITCHEN_ISLAND -> R.drawable.kitchen_island
+                MapObjectType.LARGE_INDOOR_PLANT -> R.drawable.large_indoor_plant
+                MapObjectType.OFFICE_CHAIR -> R.drawable.office_chair
+                MapObjectType.OFFICE_DESK -> R.drawable.office_desk
+                MapObjectType.PIANO -> R.drawable.piano
+                MapObjectType.RECTANGULAR_COFFEE_TABLE -> R.drawable.rectangular_coffee_table
+                MapObjectType.RECTANGULAR_DINING_TABLE -> R.drawable.rectangular_dining_table
+                MapObjectType.ROUND_DINING_TABLE -> R.drawable.round_dining_table
+                MapObjectType.SHOWER_CABIN -> R.drawable.shower_cabin
+                MapObjectType.SINGLE_SOFA -> R.drawable.single_sofa
+                MapObjectType.STOVE_COUNTER -> R.drawable.stove_counter
+                MapObjectType.DRESSING_TABLE -> R.drawable.dressing_table
+                MapObjectType.TRIPLE_SOFA -> R.drawable.triple_sofa
             }
 
     val isImage = drawableRes != null
@@ -2839,6 +3922,7 @@ fun MapObjectView(
         obj: MapObject,
         isInteractive: Boolean,
         isSelected: Boolean,
+        mapScale: Float,
         onClick: () -> Unit,
         onDelete: () -> Unit,
         onRotate: () -> Unit,
@@ -2893,8 +3977,14 @@ fun MapObjectView(
                                 } else this
                             }
     ) {
-        val imageWidth = if (obj.rotation % 180 != 0f) obj.height else obj.width
-        val imageHeight = if (obj.rotation % 180 != 0f) obj.width else obj.height
+        val defaultDims = obj.type.getDefaultDimensions()
+        val isBoundaryObject = obj.type == MapObjectType.WINDOW || obj.type == MapObjectType.DOOR_LEFT || obj.type == MapObjectType.DOOR_RIGHT
+
+        val rem = obj.rotation % 180f
+        val isOrthogonalSwap = (rem == 90f || rem == -90f)
+        
+        val imageWidth = if (isBoundaryObject) defaultDims.first else if (isOrthogonalSwap) obj.height else obj.width
+        val imageHeight = if (isBoundaryObject) defaultDims.second else if (isOrthogonalSwap) obj.width else obj.height
 
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             MapObjectVisuals(
@@ -2910,7 +4000,7 @@ fun MapObjectView(
                     modifier =
                             Modifier.align(Alignment.TopStart)
                                     .offset(x = (-12).dp, y = (-12).dp)
-                                    .size(24.dp),
+                                    .requiredSize(24.dp),
                     shape = androidx.compose.foundation.shape.CircleShape,
                     color = Color.White,
                     shadowElevation = 4.dp,
@@ -2928,7 +4018,7 @@ fun MapObjectView(
                     modifier =
                             Modifier.align(Alignment.TopEnd)
                                     .offset(x = 12.dp, y = (-12).dp)
-                                    .size(24.dp),
+                                    .requiredSize(24.dp),
                     shape = androidx.compose.foundation.shape.CircleShape,
                     color = Color.White,
                     shadowElevation = 4.dp,
@@ -3006,5 +4096,115 @@ fun getSizeDisplay(
                     com.example.lostfoundai.data.ItemSize.MEDIUM -> "中"
                     com.example.lostfoundai.data.ItemSize.LARGE -> "大"
                 }
+    }
+}
+
+@Composable
+fun ExtrudeHandleView(
+    x: Float, // Map px
+    y: Float, // Map px
+    dens: Float,
+    isEndNode: Boolean,
+    isSnapped: Boolean,
+    color: Color = Color.Red,
+    onCenterDragStart: () -> Unit,
+    onCenterDrag: (Offset) -> Unit,
+    onCenterDragEnd: () -> Unit,
+    onExtrudeDragStart: () -> Unit,
+    onExtrudeDrag: (Offset) -> Unit,
+    onExtrudeDragEnd: () -> Unit
+) {
+    val currentOnCenterDragStart by androidx.compose.runtime.rememberUpdatedState(onCenterDragStart)
+    val currentOnCenterDrag by androidx.compose.runtime.rememberUpdatedState(onCenterDrag)
+    val currentOnCenterDragEnd by androidx.compose.runtime.rememberUpdatedState(onCenterDragEnd)
+    val currentOnExtrudeDragStart by androidx.compose.runtime.rememberUpdatedState(onExtrudeDragStart)
+    val currentOnExtrudeDrag by androidx.compose.runtime.rememberUpdatedState(onExtrudeDrag)
+    val currentOnExtrudeDragEnd by androidx.compose.runtime.rememberUpdatedState(onExtrudeDragEnd)
+
+    val handleSize = 64.dp // Large hit area for extrude arrows
+    val centerNodeSize = 24.dp
+    
+    Box(
+        modifier = Modifier
+            .offset { 
+                androidx.compose.ui.unit.IntOffset(
+                    (x - 32f * dens).toInt(), 
+                    (y - 32f * dens).toInt()
+                ) 
+            }
+            .size(handleSize)
+    ) {
+        // Extrude area (arrows)
+        if (isEndNode && !isSnapped) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { currentOnExtrudeDragStart() },
+                            onDragEnd = { currentOnExtrudeDragEnd() },
+                            onDragCancel = { currentOnExtrudeDragEnd() }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            currentOnExtrudeDrag(dragAmount)
+                        }
+                    }
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cw = size.width
+                    val ch = size.height
+                    val cx = cw / 2f
+                    val cy = ch / 2f
+                    val arrowDist = 18.dp.toPx()
+                    val arrowSize = 6.dp.toPx()
+                    
+                    val arrowColor = Color(0xFF4CAF50) // Green for extrude
+                    
+                    // Helper to draw a triangle arrow pointing outwards
+                    fun drawArrow(px: Float, py: Float, angleDegrees: Float) {
+                        val path = Path()
+                        path.moveTo(px, py)
+                        val angleRad = Math.toRadians(angleDegrees.toDouble())
+                        // The base of the arrow
+                        val leftX = px - arrowSize * kotlin.math.cos(angleRad + Math.PI/2).toFloat()
+                        val leftY = py - arrowSize * kotlin.math.sin(angleRad + Math.PI/2).toFloat()
+                        val rightX = px - arrowSize * kotlin.math.cos(angleRad - Math.PI/2).toFloat()
+                        val rightY = py - arrowSize * kotlin.math.sin(angleRad - Math.PI/2).toFloat()
+                        val tipX = px + arrowSize * 1.5f * kotlin.math.cos(angleRad).toFloat()
+                        val tipY = py + arrowSize * 1.5f * kotlin.math.sin(angleRad).toFloat()
+                        
+                        path.moveTo(tipX, tipY)
+                        path.lineTo(leftX, leftY)
+                        path.lineTo(rightX, rightY)
+                        path.close()
+                        drawPath(path, arrowColor)
+                    }
+                    
+                    // Top, Bottom, Left, Right
+                    drawArrow(cx, cy - arrowDist, -90f)
+                    drawArrow(cx, cy + arrowDist, 90f)
+                    drawArrow(cx - arrowDist, cy, 180f)
+                    drawArrow(cx + arrowDist, cy, 0f)
+                }
+            }
+        }
+        
+        // Center node
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(centerNodeSize)
+                .background(color, CircleShape)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { currentOnCenterDragStart() },
+                        onDragEnd = { currentOnCenterDragEnd() },
+                        onDragCancel = { currentOnCenterDragEnd() }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        currentOnCenterDrag(dragAmount)
+                    }
+                }
+        )
     }
 }

@@ -23,12 +23,13 @@ class PredictionEngine {
         item: MissingItem,
         mapObjects: List<MapObject>,
         walkPath: List<PointF>,
-        boundary: List<PointF>
+        boundary: List<PointF>,
+        innerWalls: List<List<PointF>> = emptyList()
     ): PredictionResult {
         val apiKey = GeminiConfig.API_KEY
         if (apiKey.isBlank()) {
             android.util.Log.w("PredictionEngine", "Gemini API key is blank, running fallback prediction")
-            return calculateFallback(item, mapObjects, walkPath)
+            return calculateFallback(item, mapObjects, walkPath, innerWalls)
         }
 
         try {
@@ -58,6 +59,9 @@ class PredictionEngine {
 
                 Room Boundary vertices (in dp):
                 $roomVerticesDescription
+                
+                Inner Walls (in dp):
+                ${innerWalls.joinToString("\n") { wall -> "Wall: " + wall.joinToString(" -> ") { "Point(x=${it.x}, y=${it.y})" } }}
 
                 Furniture and room objects on the map:
                 $furnitureDescription
@@ -134,7 +138,7 @@ class PredictionEngine {
             return PredictionResult(points = points, lines = lines)
         } catch (e: Exception) {
             android.util.Log.e("PredictionEngine", "Gemini prediction failed, running fallback", e)
-            return calculateFallback(item, mapObjects, walkPath)
+            return calculateFallback(item, mapObjects, walkPath, innerWalls)
         }
     }
 
@@ -142,6 +146,7 @@ class PredictionEngine {
         item: MissingItem,
         mapObjects: List<MapObject>,
         walkPath: List<PointF>,
+        innerWalls: List<List<PointF>>,
         topN: Int = 3
     ): PredictionResult {
         val spots = mutableListOf<Pair<Pair<Float, Float>, Float>>()

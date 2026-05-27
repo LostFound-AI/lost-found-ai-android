@@ -143,11 +143,6 @@ object BoundaryUtils {
         return bestPos
     }
 
-    /**
-     * Clamp a rectangle position so it stays inside the polygon boundary.
-     * If the current position is valid, returns it as-is.
-     * If invalid, returns the last valid position (or finds nearest inside).
-     */
     fun clampRectToPolygon(
         x: Float, y: Float, w: Float, h: Float,
         lastValidX: Float, lastValidY: Float,
@@ -162,5 +157,141 @@ object BoundaryUtils {
         return findNearestInsidePosition(x, y, w, h, vertices)
     }
 
+    /**
+     * Check if a rectangle intersects a line segment (p1 -> p2).
+     * Assumes the line is perfectly horizontal or vertical (orthogonal).
+     */
+    fun rectIntersectsLine(x: Float, y: Float, w: Float, h: Float, p1: PointF, p2: PointF): Boolean {
+        val minX = min(p1.x, p2.x)
+        val maxX = max(p1.x, p2.x)
+        val minY = min(p1.y, p2.y)
+        val maxY = max(p1.y, p2.y)
+
+        val rectLeft = x
+        val rectRight = x + w
+        val rectTop = y
+        val rectBottom = y + h
+
+        // If line is horizontal
+        if (p1.y == p2.y) {
+            val isYOverlapping = (p1.y >= rectTop && p1.y <= rectBottom)
+            val isXOverlapping = (rectLeft <= maxX && rectRight >= minX)
+            return isYOverlapping && isXOverlapping
+        }
+        
+        // If line is vertical
+        if (p1.x == p2.x) {
+            val isXOverlapping = (p1.x >= rectLeft && p1.x <= rectRight)
+            val isYOverlapping = (rectTop <= maxY && rectBottom >= minY)
+            return isXOverlapping && isYOverlapping
+        }
+
+        // For non-orthogonal lines (fallback)
+        // A simple bounding box check
+        if (rectRight < minX || rectLeft > maxX || rectBottom < minY || rectTop > maxY) return false
+        
+        // Check if endpoints are inside rect
+        if (p1.x in rectLeft..rectRight && p1.y in rectTop..rectBottom) return true
+        if (p2.x in rectLeft..rectRight && p2.y in rectTop..rectBottom) return true
+
+        return false // Detailed segment-segment intersection is skipped for simplicity as we enforce orthogonal inner walls.
+    }
+
+    /**
+     * Check if two line segments (p1->p2 and p3->p4) intersect.
+     */
+    fun lineIntersectsLine(p1: PointF, p2: PointF, p3: PointF, p4: PointF): Boolean {
+        fun ccw(A: PointF, B: PointF, C: PointF): Boolean {
+            return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x)
+        }
+        val intersect = ccw(p1, p3, p4) != ccw(p2, p3, p4) && ccw(p1, p2, p3) != ccw(p1, p2, p4)
+        
+        // Collinear check for overlapping orthogonal lines
+        if (p1.x == p2.x && p2.x == p3.x && p3.x == p4.x) {
+            val min1 = min(p1.y, p2.y); val max1 = max(p1.y, p2.y)
+            val min2 = min(p3.y, p4.y); val max2 = max(p3.y, p4.y)
+            return max1 > min2 && max2 > min1
+        }
+        if (p1.y == p2.y && p2.y == p3.y && p3.y == p4.y) {
+            val min1 = min(p1.x, p2.x); val max1 = max(p1.x, p2.x)
+            val min2 = min(p3.x, p4.x); val max2 = max(p3.x, p4.x)
+            return max1 > min2 && max2 > min1
+        }
+        return intersect
+    }
+
     private infix fun Float.to(other: Float): PointF = PointF(this, other)
+
+    /**
+     * Project a point (px, py) onto a line segment (a -> b) and return the closest point on the segment.
+     */
+    fun projectPointOntoSegment(px: Float, py: Float, a: PointF, b: PointF): PointF {
+        val dx = b.x - a.x
+        val dy = b.y - a.y
+        val lenSq = dx * dx + dy * dy
+        if (lenSq == 0f) return PointF(a.x, a.y) // Segment is just a point
+
+        // Calculate the parameter t of the projection on the line
+        var t = ((px - a.x) * dx + (py - a.y) * dy) / lenSq
+        t = max(0f, min(1f, t)) // Clamp to segment
+
+        return PointF(a.x + t * dx, a.y + t * dy)
+    }
+
+    /**
+     * Calculate the shortest distance from a point (px, py) to a line segment (a -> b).
+     */
+    fun distanceToSegment(px: Float, py: Float, a: PointF, b: PointF): Float {
+        val proj = projectPointOntoSegment(px, py, a, b)
+        val dx = px - proj.x
+        val dy = py - proj.y
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    /**
+     * Adapt inner walls when the boundary shape changes.
+     */
+    fun adaptInnerWallsToNewBoundary(
+        innerWalls: List<List<PointF>>,
+        oldBoundary: List<PointF>,
+        newBoundary: List<PointF>
+    ): List<List<PointF>> {
+        if (newBoundary.size < 3) return innerWalls
+        return innerWalls.map { wall ->
+            wall.map { node ->
+                var wasSnapped = false
+                if (oldBoundary.size >= 3) {
+                    for (i in oldBoundary.indices) {
+                        val p1 = oldBoundary[i]
+                        val p2 = oldBoundary[(i + 1) % oldBoundary.size]
+                        if (distanceToSegment(node.x, node.y, p1, p2) < 5f) {
+                            wasSnapped = true
+                            break
+                        }
+                    }
+                }
+
+                if (wasSnapped || !pointInPolygon(node.x, node.y, newBoundary)) {
+                    // Find nearest segment on new boundary
+                    var minDistance = Float.MAX_VALUE
+                    var nearestPoint = node
+                    for (i in newBoundary.indices) {
+                        val np1 = newBoundary[i]
+                        val np2 = newBoundary[(i + 1) % newBoundary.size]
+                        val proj = projectPointOntoSegment(node.x, node.y, np1, np2)
+                        val dx = node.x - proj.x
+                        val dy = node.y - proj.y
+                        val dist = sqrt(dx * dx + dy * dy)
+                        if (dist < minDistance) {
+                            minDistance = dist
+                            nearestPoint = proj
+                        }
+                    }
+                    nearestPoint
+                } else {
+                    node
+                }
+            }
+        }
+    }
 }

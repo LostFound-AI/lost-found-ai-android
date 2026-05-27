@@ -21,7 +21,7 @@ interface ItemRepository {
     fun addSavedBoundary(boundary: SavedBoundary)
     fun removeSavedBoundary(id: String)
     fun renameSavedBoundary(id: String, newName: String)
-    fun updateSavedBoundary(id: String, newVertices: List<PointF>)
+    fun updateSavedBoundary(id: String, newVertices: List<PointF>, newInnerWalls: List<List<PointF>> = emptyList())
 
     // Walk Path
     fun getWalkPath(): Flow<List<PointF>>
@@ -137,9 +137,9 @@ class InMemoryItemRepository : ItemRepository {
         }
     }
 
-    override fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
+    override fun updateSavedBoundary(id: String, newVertices: List<PointF>, newInnerWalls: List<List<PointF>>) {
         savedBoundariesFlow.value = savedBoundariesFlow.value.map {
-            if (it.id == id) it.copy(vertices = newVertices) else it
+            if (it.id == id) it.copy(vertices = newVertices, innerWalls = newInnerWalls) else it
         }
     }
 

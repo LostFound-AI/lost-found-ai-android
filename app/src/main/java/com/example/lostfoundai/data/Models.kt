@@ -53,7 +53,22 @@ enum class MapObjectType {
     REFRIGERATOR,
     TABLE_L,
     TABLE_S,
-    TABLE_L_SHAPE
+    TABLE_L_SHAPE,
+    BOOKSHELF,
+    DINING_CHAIR,
+    KITCHEN_ISLAND,
+    LARGE_INDOOR_PLANT,
+    OFFICE_CHAIR,
+    OFFICE_DESK,
+    PIANO,
+    RECTANGULAR_COFFEE_TABLE,
+    RECTANGULAR_DINING_TABLE,
+    ROUND_DINING_TABLE,
+    SHOWER_CABIN,
+    SINGLE_SOFA,
+    STOVE_COUNTER,
+    DRESSING_TABLE,
+    TRIPLE_SOFA
 }
 
 data class MapObject(
@@ -86,25 +101,55 @@ fun MapObjectType.getDisplayName(): String {
         MapObjectType.TABLE_L -> "桌子(長)"
         MapObjectType.TABLE_S -> "桌子(短)"
         MapObjectType.TABLE_L_SHAPE -> "L型桌"
+        MapObjectType.BOOKSHELF -> "書架"
+        MapObjectType.DINING_CHAIR -> "餐椅"
+        MapObjectType.KITCHEN_ISLAND -> "中島"
+        MapObjectType.LARGE_INDOOR_PLANT -> "大型盆栽"
+        MapObjectType.OFFICE_CHAIR -> "辦公椅"
+        MapObjectType.OFFICE_DESK -> "辦公桌"
+        MapObjectType.PIANO -> "鋼琴"
+        MapObjectType.RECTANGULAR_COFFEE_TABLE -> "長方茶几"
+        MapObjectType.RECTANGULAR_DINING_TABLE -> "長方餐桌"
+        MapObjectType.ROUND_DINING_TABLE -> "圓形餐桌"
+        MapObjectType.SHOWER_CABIN -> "淋浴間"
+        MapObjectType.SINGLE_SOFA -> "單人沙發"
+        MapObjectType.STOVE_COUNTER -> "廚房檯面"
+        MapObjectType.DRESSING_TABLE -> "梳妝台"
+        MapObjectType.TRIPLE_SOFA -> "三人沙發"
     }
 }
 
 fun MapObjectType.getDefaultDimensions(): Pair<Float, Float> {
     return when (this) {
-        MapObjectType.BED -> Pair(77.5f, 148.5f)
-        MapObjectType.DOUBLE_BED -> Pair(124f, 147f)
-        MapObjectType.BATHTUB -> Pair(189f, 84f)
+        MapObjectType.BED -> Pair(90f, 175.5f)
+        MapObjectType.DOUBLE_BED -> Pair(187.5f, 185.5f)
+        MapObjectType.BATHTUB -> Pair(196.5f, 102.5f)
         MapObjectType.CHAIR_1 -> Pair(57.6f, 62f)
         MapObjectType.CHAIR_2 -> Pair(57.6f, 62f)
         MapObjectType.DOOR_LEFT, MapObjectType.DOOR_RIGHT -> Pair(64.5f, 64f)
-        MapObjectType.DOUBLE_SOFA -> Pair(189.5f, 91.5f)
+        MapObjectType.DOUBLE_SOFA -> Pair(228f, 102f)
         MapObjectType.HIGH_CABINET_L -> Pair(186.5f, 66f)
         MapObjectType.HIGH_CABINET_S -> Pair(125f, 64.5f)
         MapObjectType.REFRIGERATOR -> Pair(64.5f, 65f)
         MapObjectType.TABLE_L -> Pair(188.5f, 65f)
         MapObjectType.TABLE_S -> Pair(126f, 64.5f)
         MapObjectType.TABLE_L_SHAPE -> Pair(124f, 125f)
-        MapObjectType.BATHROOM_SINK -> Pair(91f, 66f)
+        MapObjectType.BATHROOM_SINK -> Pair(160.5f, 113.5f)
+        MapObjectType.BOOKSHELF -> Pair(215.5f, 67f)
+        MapObjectType.DINING_CHAIR -> Pair(65f, 75.5f)
+        MapObjectType.KITCHEN_ISLAND -> Pair(301f, 85.5f)
+        MapObjectType.LARGE_INDOOR_PLANT -> Pair(166.5f, 165.5f)
+        MapObjectType.OFFICE_CHAIR -> Pair(113f, 115.5f)
+        MapObjectType.OFFICE_DESK -> Pair(220.5f, 184f)
+        MapObjectType.PIANO -> Pair(245f, 128.5f)
+        MapObjectType.RECTANGULAR_COFFEE_TABLE -> Pair(154.5f, 84f)
+        MapObjectType.RECTANGULAR_DINING_TABLE -> Pair(187.5f, 150f)
+        MapObjectType.ROUND_DINING_TABLE -> Pair(182f, 182.5f)
+        MapObjectType.SHOWER_CABIN -> Pair(159.5f, 153.5f)
+        MapObjectType.SINGLE_SOFA -> Pair(110.5f, 114.5f)
+        MapObjectType.STOVE_COUNTER -> Pair(193f, 108.5f)
+        MapObjectType.DRESSING_TABLE -> Pair(143.5f, 135.5f)
+        MapObjectType.TRIPLE_SOFA -> Pair(255f, 115f)
         MapObjectType.TOILET -> Pair(89f, 64f)
         MapObjectType.WINDOW -> Pair(64.5f, 16f)
     }
@@ -131,14 +176,16 @@ data class RoomData(
 data class RoomBoundary(
     val preset: RoomShapePreset = RoomShapePreset.RECTANGLE,
     val vertices: List<PointF> = emptyList(),
-    val savedBoundaryId: String? = null // reference to a SavedBoundary if using one
+    val savedBoundaryId: String? = null, // reference to a SavedBoundary if using one
+    val innerWalls: List<List<PointF>> = emptyList()
 )
 
 // 已儲存的自訂邊界
 data class SavedBoundary(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val vertices: List<PointF>
+    val vertices: List<PointF>,
+    val innerWalls: List<List<PointF>> = emptyList()
 )
 
 fun MapObjectType.emoji(): String = when (this) {
@@ -159,27 +206,24 @@ fun MapObjectType.emoji(): String = when (this) {
     MapObjectType.TABLE_L        -> "🍽"
     MapObjectType.TABLE_S        -> "🍽"
     MapObjectType.TABLE_L_SHAPE  -> "🍽"
+    MapObjectType.BOOKSHELF -> "📚"
+    MapObjectType.DINING_CHAIR -> "🪑"
+    MapObjectType.KITCHEN_ISLAND -> "🍳"
+    MapObjectType.LARGE_INDOOR_PLANT -> "🪴"
+    MapObjectType.OFFICE_CHAIR -> "🪑"
+    MapObjectType.OFFICE_DESK -> "💻"
+    MapObjectType.PIANO -> "🎹"
+    MapObjectType.RECTANGULAR_COFFEE_TABLE -> "☕"
+    MapObjectType.RECTANGULAR_DINING_TABLE -> "🍽"
+    MapObjectType.ROUND_DINING_TABLE -> "🍽"
+    MapObjectType.SHOWER_CABIN -> "🚿"
+    MapObjectType.SINGLE_SOFA -> "🛋"
+    MapObjectType.STOVE_COUNTER -> "🍳"
+    MapObjectType.DRESSING_TABLE -> "🪞"
+    MapObjectType.TRIPLE_SOFA -> "🛋"
 }
 
-fun MapObjectType.chineseName(): String = when (this) {
-    MapObjectType.BED            -> "單人床"
-    MapObjectType.DOUBLE_BED     -> "雙人床"
-    MapObjectType.HIGH_CABINET_L -> "高櫃(大)"
-    MapObjectType.HIGH_CABINET_S -> "高櫃(小)"
-    MapObjectType.BATHROOM_SINK  -> "洗手台"
-    MapObjectType.WINDOW         -> "窗戶"
-    MapObjectType.TOILET         -> "馬桶"
-    MapObjectType.BATHTUB        -> "浴缸"
-    MapObjectType.CHAIR_1        -> "椅子 1"
-    MapObjectType.CHAIR_2        -> "椅子 2"
-    MapObjectType.DOOR_LEFT      -> "門(左開)"
-    MapObjectType.DOOR_RIGHT     -> "門(右開)"
-    MapObjectType.DOUBLE_SOFA    -> "雙人沙發"
-    MapObjectType.REFRIGERATOR   -> "冰箱"
-    MapObjectType.TABLE_L        -> "桌子(長)"
-    MapObjectType.TABLE_S        -> "桌子(短)"
-    MapObjectType.TABLE_L_SHAPE  -> "L型桌"
-}
+fun MapObjectType.chineseName(): String = getDisplayName()
 
 fun MapObjectType.defaultWidth(): Float = getDefaultDimensions().first
 fun MapObjectType.defaultHeight(): Float = getDefaultDimensions().second

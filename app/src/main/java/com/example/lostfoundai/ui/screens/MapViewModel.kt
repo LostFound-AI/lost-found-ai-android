@@ -205,6 +205,21 @@ class MapViewModel(
         repository.setWalkPath(current + PointF(x, y))
     }
     
+    fun undoWalkPathPoint() {
+        val current = walkPath.value
+        if (current.isNotEmpty()) {
+            repository.setWalkPath(current.dropLast(1))
+        }
+    }
+    
+    fun updateWalkPathPoint(index: Int, x: Float, y: Float) {
+        val current = walkPath.value.toMutableList()
+        if (index in current.indices) {
+            current[index] = PointF(x, y)
+            repository.setWalkPath(current)
+        }
+    }
+    
     fun clearWalkPath() {
         repository.setWalkPath(emptyList())
     }
@@ -215,7 +230,7 @@ class MapViewModel(
             try {
                 val item = repository.getItemById(itemId) ?: return@launch
                 val boundary = roomBoundary.value.vertices
-                val result = predictionEngine.calculatePrediction(item, mapObjects.value, walkPath.value, boundary)
+                val result = predictionEngine.calculatePrediction(item, mapObjects.value, walkPath.value, boundary, roomBoundary.value.innerWalls)
                 _predictionResult.value = result.copy(itemId = item.id)
             } finally {
                 _isPredicting.value = false
@@ -232,6 +247,17 @@ class MapViewModel(
         started = kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000),
         initialValue = true
     )
+
+    fun updateInnerWalls(walls: List<List<PointF>>) {
+        val currentBoundary = roomBoundary.value
+        val updatedBoundary = currentBoundary.copy(innerWalls = walls)
+        repository.setRoomBoundary(updatedBoundary)
+        
+        val savedId = currentBoundary.savedBoundaryId
+        if (savedId != null) {
+            repository.updateSavedBoundary(savedId, currentBoundary.vertices, walls)
+        }
+    }
 
     fun setGridEnabled(enabled: Boolean) {
         repository.setGridEnabled(enabled)
