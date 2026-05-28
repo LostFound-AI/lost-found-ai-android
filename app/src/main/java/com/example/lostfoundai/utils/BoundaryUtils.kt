@@ -2,6 +2,9 @@ package com.example.lostfoundai.utils
 
 import com.example.lostfoundai.data.MapObject
 import com.example.lostfoundai.data.PointF
+import com.example.lostfoundai.data.Collider
+import com.example.lostfoundai.data.CircleCollider
+import com.example.lostfoundai.data.RectCollider
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -11,6 +14,133 @@ import kotlin.math.sqrt
  * Utility functions for polygon-based boundary collision detection.
  */
 object BoundaryUtils {
+
+    sealed class TransformedShape
+
+    data class TransformedRect(
+        val corners: List<PointF> // 4 corners
+    ) : TransformedShape()
+
+    data class TransformedCircle(
+        val cx: Float, val cy: Float,
+        val radius: Float
+    ) : TransformedShape()
+
+    fun getTransformedShapes(obj: MapObject): List<TransformedShape> {
+        val colliders = if (obj.colliders.isNotEmpty()) obj.colliders else {
+            // Default AABB
+            listOf(RectCollider(0f, 0f, obj.width, obj.height))
+        }
+
+        val rad = Math.toRadians(obj.rotation.toDouble()).toFloat()
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+
+        return colliders.map { collider ->
+            // Rotate the offset
+            val ox = collider.offsetX * obj.scale
+            val oy = collider.offsetY * obj.scale
+            val rotOx = ox * cosR - oy * sinR
+            val rotOy = ox * sinR + oy * cosR
+            
+            // World center of this collider
+            val cx = obj.x + (obj.width * obj.scale) / 2f + rotOx
+            val cy = obj.y + (obj.height * obj.scale) / 2f + rotOy
+
+            when (collider) {
+                is CircleCollider -> {
+                    TransformedCircle(cx, cy, collider.radius * obj.scale)
+                }
+                is RectCollider -> {
+                    val w = collider.width * obj.scale
+                    val h = collider.height * obj.scale
+                    
+                    // 4 corners relative to collider center
+                    val dx = listOf(-w/2f, w/2f, w/2f, -w/2f)
+                    val dy = listOf(-h/2f, -h/2f, h/2f, h/2f)
+                    
+                    val corners = (0 until 4).map { i ->
+                        val rx = dx[i] * cosR - dy[i] * sinR
+                        val ry = dx[i] * sinR + dy[i] * cosR
+                        PointF(cx + rx, cy + ry)
+                    }
+                    TransformedRect(corners)
+                }
+            }
+        }
+    }
+
+    fun checkCollision(shapeA: TransformedShape, shapeB: TransformedShape): Boolean {
+        if (shapeA is TransformedCircle && shapeB is TransformedCircle) {
+            val dx = shapeA.cx - shapeB.cx
+            val dy = shapeA.cy - shapeB.cy
+            val distSq = dx * dx + dy * dy
+            val rSum = shapeA.radius + shapeB.radius
+            return distSq < rSum * rSum
+        }
+        if (shapeA is TransformedRect && shapeB is TransformedRect) {
+            return checkSATCollision(shapeA.corners, shapeB.corners)
+        }
+        if (shapeA is TransformedRect && shapeB is TransformedCircle) {
+            return checkRectCircleCollision(shapeA, shapeB)
+        }
+        if (shapeA is TransformedCircle && shapeB is TransformedRect) {
+            return checkRectCircleCollision(shapeB, shapeA)
+        }
+        return false
+    }
+
+    private fun checkSATCollision(polyA: List<PointF>, polyB: List<PointF>): Boolean {
+        val polygons = listOf(polyA, polyB)
+        for (poly in polygons) {
+            for (i in poly.indices) {
+                val p1 = poly[i]
+                val p2 = poly[(i + 1) % poly.size]
+                
+                // Normal vector to the edge
+                val normalX = p2.y - p1.y
+                val normalY = p1.x - p2.x
+                
+                // Project both polygons onto the normal
+                var minA = Float.MAX_VALUE
+                var maxA = -Float.MAX_VALUE
+                for (p in polyA) {
+                    val proj = p.x * normalX + p.y * normalY
+                    if (proj < minA) minA = proj
+                    if (proj > maxA) maxA = proj
+                }
+                
+                var minB = Float.MAX_VALUE
+                var maxB = -Float.MAX_VALUE
+                for (p in polyB) {
+                    val proj = p.x * normalX + p.y * normalY
+                    if (proj < minB) minB = proj
+                    if (proj > maxB) maxB = proj
+                }
+                
+                // Check if gaps exist
+                if (maxA < minB || maxB < minA) {
+                    return false // Separating axis found
+                }
+            }
+        }
+        return true
+    }
+
+    private fun checkRectCircleCollision(rect: TransformedRect, circle: TransformedCircle): Boolean {
+        // Point in polygon (circle center in rect)
+        if (pointInPolygon(circle.cx, circle.cy, rect.corners)) return true
+        
+        // Or distance from circle center to any segment < radius
+        for (i in 0 until 4) {
+            val p1 = rect.corners[i]
+            val p2 = rect.corners[(i + 1) % 4]
+            if (distanceToSegment(circle.cx, circle.cy, p1, p2) <= circle.radius) {
+                return true
+            }
+        }
+        return false
+    }
 
     /**
      * Ray-casting algorithm to determine if a point is inside a polygon.
@@ -102,7 +232,7 @@ object BoundaryUtils {
         val dx = cx - rectCenterX
         val dy = cy - rectCenterY
         val dist = sqrt(dx * dx + dy * dy)
-        if (dist > 0.01f) {
+        if (dist > 0.001f) {
             val stepX = dx / dist
             val stepY = dy / dist
             val stepSize = 5f // dp per step
@@ -293,5 +423,56 @@ object BoundaryUtils {
                 }
             }
         }
+    }
+
+    /**
+     * Removes collinear intermediate points from a list of vertices representing a closed polygon.
+     * Checks if three consecutive points form a straight line.
+     */
+    fun cleanupCollinearPoints(vertices: List<PointF>): List<PointF> {
+        if (vertices.size <= 3) return vertices
+        
+        var currentVertices = vertices.toList()
+        var changed = true
+        val epsilonDist = 3f // Max pixel distance to be considered collinear
+        
+        while (changed && currentVertices.size > 3) {
+            changed = false
+            val temp = mutableListOf<PointF>()
+            
+            for (i in currentVertices.indices) {
+                val prev = if (temp.isEmpty()) currentVertices.last() else temp.last()
+                val current = currentVertices[i]
+                val next = currentVertices[(i + 1) % currentVertices.size]
+                
+                // Vector from prev to current
+                val vx1 = current.x - prev.x
+                val vy1 = current.y - prev.y
+                
+                // Vector from current to next
+                val vx2 = next.x - current.x
+                val vy2 = next.y - current.y
+                
+                // Vector from prev to next
+                val vpx = next.x - prev.x
+                val vpy = next.y - prev.y
+                val lineLength = kotlin.math.sqrt(vpx * vpx + vpy * vpy)
+                
+                val crossProduct = kotlin.math.abs(vx1 * vy2 - vy1 * vx2)
+                val dotProduct = vx1 * vx2 + vy1 * vy2
+                
+                val dist = if (lineLength > 0) crossProduct / lineLength else 0f
+                
+                if (dist < epsilonDist && dotProduct > 0) {
+                    // Collinear and same direction, so 'current' is redundant.
+                    changed = true
+                } else {
+                    temp.add(current)
+                }
+            }
+            currentVertices = temp
+        }
+        
+        return currentVertices
     }
 }

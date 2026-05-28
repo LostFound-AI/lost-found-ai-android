@@ -80,7 +80,8 @@ fun LostFoundApp() {
                     navController.navigate("map") 
                 },
                 onAddRoom = { name -> repository.addRoom(name) },
-                onDeleteRoom = { id -> repository.deleteRoom(id) }
+                onDeleteRoom = { id -> repository.deleteRoom(id) },
+                onRenameRoom = { id, name -> repository.renameRoom(id, name) }
             )
         }
         composable("map") {

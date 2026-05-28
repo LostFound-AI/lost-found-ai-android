@@ -79,7 +79,8 @@ data class MapObject(
     val rotation: Float = 0f,
     val width: Float = 100f,
     val height: Float = 100f,
-    val scale: Float = 1.0f
+    val scale: Float = 1.0f,
+    val colliders: List<Collider> = emptyList()
 )
 
 fun MapObjectType.getDisplayName(): String {
@@ -152,6 +153,57 @@ fun MapObjectType.getDefaultDimensions(): Pair<Float, Float> {
         MapObjectType.TRIPLE_SOFA -> Pair(255f, 115f)
         MapObjectType.TOILET -> Pair(89f, 64f)
         MapObjectType.WINDOW -> Pair(64.5f, 16f)
+    }
+}
+
+sealed class Collider {
+    abstract val offsetX: Float
+    abstract val offsetY: Float
+}
+
+data class RectCollider(
+    override val offsetX: Float,
+    override val offsetY: Float,
+    val width: Float,
+    val height: Float
+) : Collider()
+
+data class CircleCollider(
+    override val offsetX: Float,
+    override val offsetY: Float,
+    val radius: Float
+) : Collider()
+
+fun MapObjectType.getDefaultColliders(): List<Collider> {
+    val (w, h) = this.getDefaultDimensions()
+    return when (this) {
+        MapObjectType.OFFICE_DESK -> {
+            listOf(
+                RectCollider(0f, -h/4f, w, h/2f),
+                RectCollider(0f, h/4f, 60f, 60f)
+            )
+        }
+        MapObjectType.ROUND_DINING_TABLE -> {
+            val r = w / 3f
+            val chairSize = 40f
+            listOf(
+                CircleCollider(0f, 0f, r),
+                RectCollider(0f, -(r + chairSize/2), chairSize, chairSize),
+                RectCollider(0f, (r + chairSize/2), chairSize, chairSize),
+                RectCollider(-(r + chairSize/2), 0f, chairSize, chairSize),
+                RectCollider((r + chairSize/2), 0f, chairSize, chairSize)
+            )
+        }
+        MapObjectType.TABLE_L_SHAPE -> {
+            val t = 30f // 桌板厚度約為 40 dp
+            listOf(
+                // 左側垂直桌板
+                RectCollider(-w/2f + t/2f, 0f, t, h),
+                // 上方水平桌板 (扣除左上角重疊部分)
+                RectCollider(t/2f, -h/2f + t/2f, w - t, t)
+            )
+        }
+        else -> emptyList()
     }
 }
 

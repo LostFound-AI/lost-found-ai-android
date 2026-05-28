@@ -33,6 +33,7 @@ interface ItemRepository {
     fun getRooms(): Flow<List<RoomData>>
     fun addRoom(name: String)
     fun deleteRoom(roomId: String)
+    fun renameRoom(roomId: String, newName: String)
     fun switchRoom(roomId: String)
 
     fun isGridEnabled(): Flow<Boolean>
@@ -83,6 +84,7 @@ class InMemoryItemRepository : ItemRepository {
     override fun getMapObjects(): Flow<List<MapObject>> = mapObjectsFlow
 
     override fun updateMapObject(obj: MapObject) {
+        if (!obj.x.isFinite() || !obj.y.isFinite()) return
         val current = mapObjectsFlow.value.toMutableList()
         val idx = current.indexOfFirst { it.id == obj.id }
         if (idx != -1) {
@@ -92,6 +94,7 @@ class InMemoryItemRepository : ItemRepository {
     }
 
     override fun addMapObject(obj: MapObject) {
+        if (!obj.x.isFinite() || !obj.y.isFinite()) return
         val current = mapObjectsFlow.value.toMutableList()
         current.add(obj)
         mapObjectsFlow.value = current
@@ -174,6 +177,10 @@ class InMemoryItemRepository : ItemRepository {
     override fun deleteRoom(roomId: String) {
         if (roomId == "default") return
         roomsFlow.value = roomsFlow.value.filter { it.id != roomId }
+    }
+
+    override fun renameRoom(roomId: String, newName: String) {
+        roomsFlow.value = roomsFlow.value.map { if (it.id == roomId) it.copy(name = newName) else it }
     }
 
     override fun switchRoom(roomId: String) {

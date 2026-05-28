@@ -91,8 +91,8 @@ class MapViewModel(
         repository.renameSavedBoundary(id, newName)
     }
 
-    fun updateSavedBoundary(id: String, newVertices: List<PointF>) {
-        repository.updateSavedBoundary(id, newVertices)
+    fun updateSavedBoundary(id: String, newVertices: List<PointF>, innerWalls: List<List<PointF>> = emptyList()) {
+        repository.updateSavedBoundary(id, newVertices, innerWalls)
     }
 
     fun clearRoom() {

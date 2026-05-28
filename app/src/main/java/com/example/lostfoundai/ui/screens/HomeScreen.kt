@@ -36,10 +36,14 @@ fun HomeScreen(
     rooms: List<RoomData>,
     onEnterRoom: (String) -> Unit,
     onAddRoom: (String) -> Unit,
-    onDeleteRoom: (String) -> Unit
+    onDeleteRoom: (String) -> Unit,
+    onRenameRoom: (String, String) -> Unit
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
     var newRoomName by remember { mutableStateOf("") }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renamingRoomId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
 
     Scaffold(
         containerColor = BackgroundColor,
@@ -158,7 +162,12 @@ fun HomeScreen(
                             room = room,
                             accentColor = accent,
                             onEnter = { onEnterRoom(room.id) },
-                            onDelete = if (room.id != "default") ({ onDeleteRoom(room.id) }) else null
+                            onDelete = if (room.id != "default") ({ onDeleteRoom(room.id) }) else null,
+                            onRename = if (room.id != "default") ({ 
+                                renamingRoomId = room.id
+                                renameText = room.name
+                                showRenameDialog = true
+                            }) else null
                         )
                     }
                 }
@@ -212,6 +221,40 @@ fun HomeScreen(
                 }
             )
         }
+
+        if (showRenameDialog) {
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                shape = RoundedCornerShape(20.dp),
+                title = { Text("重新命名房間", fontWeight = FontWeight.Bold) },
+                text = {
+                    KeyboardAccessoryProvider {
+                        AccessoryOutlinedTextField(
+                            value = renameText,
+                            onValueChange = { renameText = it },
+                            label = { Text("房間名稱") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (renameText.isNotBlank() && renamingRoomId != null) {
+                                onRenameRoom(renamingRoomId!!, renameText.trim())
+                                showRenameDialog = false
+                            }
+                        },
+                        enabled = renameText.isNotBlank()
+                    ) { Text("儲存") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) { Text("取消") }
+                }
+            )
+        }
     }
 }
 
@@ -220,7 +263,8 @@ private fun RoomCard(
     room: RoomData,
     accentColor: Color,
     onEnter: () -> Unit,
-    onDelete: (() -> Unit)?
+    onDelete: (() -> Unit)?,
+    onRename: (() -> Unit)?
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -288,8 +332,13 @@ private fun RoomCard(
                 ) {
                     Text("進入", fontWeight = FontWeight.SemiBold)
                 }
-                if (onDelete != null) {
+                if (onRename != null) {
                     Spacer(modifier = Modifier.width(4.dp))
+                    IconButton(onClick = onRename) {
+                        Text("✏️", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                if (onDelete != null) {
                     IconButton(onClick = onDelete) {
                         Icon(
                             Icons.Filled.Delete,

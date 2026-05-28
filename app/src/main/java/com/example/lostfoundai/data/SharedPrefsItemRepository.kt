@@ -104,6 +104,13 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         }.apply()
     }
 
+    override fun renameRoom(roomId: String, newName: String) {
+        val current = roomsFlow.value.map {
+            if (it.id == roomId) it.copy(name = newName) else it
+        }
+        saveRooms(current)
+    }
+
     override fun switchRoom(roomId: String) {
         currentRoomId = roomId
         reloadRoomData()
@@ -162,7 +169,8 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         val json = prefs.getString("${currentRoomId}_map_objects", null)
         return if (json != null) {
             val type = object : TypeToken<List<MapObject>>() {}.type
-            gson.fromJson(json, type)
+            val objects: List<MapObject> = gson.fromJson(json, type) ?: emptyList()
+            objects.filter { it.x.isFinite() && it.y.isFinite() }
         } else {
             emptyList()
         }
@@ -176,6 +184,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     override fun getMapObjects(): Flow<List<MapObject>> = mapObjectsFlow
 
     override fun updateMapObject(obj: MapObject) {
+        if (!obj.x.isFinite() || !obj.y.isFinite()) return
         val current = mapObjectsFlow.value.toMutableList()
         val idx = current.indexOfFirst { it.id == obj.id }
         if (idx != -1) {
@@ -185,6 +194,7 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     }
 
     override fun addMapObject(obj: MapObject) {
+        if (!obj.x.isFinite() || !obj.y.isFinite()) return
         val current = mapObjectsFlow.value.toMutableList()
         current.add(obj)
         saveMapObjects(current)
@@ -210,7 +220,8 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
     private fun loadRoomBoundary(): RoomBoundary {
         val json = prefs.getString("${currentRoomId}_room_boundary", null)
         return if (json != null) {
-            gson.fromJson(json, RoomBoundary::class.java)
+            val parsed = gson.fromJson(json, RoomBoundary::class.java)
+            if (parsed.innerWalls == null) parsed.copy(innerWalls = emptyList()) else parsed
         } else {
             RoomBoundary()
         }
@@ -263,7 +274,8 @@ class SharedPrefsItemRepository(context: Context) : ItemRepository {
         val json = prefs.getString("saved_boundaries", null)
         return if (json != null) {
             val type = object : TypeToken<List<SavedBoundary>>() {}.type
-            gson.fromJson(json, type)
+            val parsed: List<SavedBoundary>? = gson.fromJson(json, type)
+            parsed?.map { if (it.innerWalls == null) it.copy(innerWalls = emptyList()) else it } ?: emptyList()
         } else {
             emptyList()
         }
